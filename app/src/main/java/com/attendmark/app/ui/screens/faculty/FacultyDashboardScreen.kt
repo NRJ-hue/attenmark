@@ -3,6 +3,7 @@ package com.attendmark.app.ui.screens.faculty
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,7 +33,10 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FacultyDashboardScreen(
-    onLogout: () -> Unit
+    courseCode: String = "CS101",
+    courseName: String = "Course",
+    onLogout: () -> Unit,
+    onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val prefs = remember { UserPreferences(context) }
@@ -62,7 +66,7 @@ fun FacultyDashboardScreen(
                 val diff = sessionExpiresAt - System.currentTimeMillis()
                 if (diff <= 0) {
                     isSessionActive = false
-                    firestoreRepo.stopSession("CS101")
+                    firestoreRepo.stopSession(courseCode)
                     break
                 }
                 timeRemainingSec = (diff / 1000).toInt()
@@ -80,7 +84,7 @@ fun FacultyDashboardScreen(
             scope.launch {
                 val (loc, errorMsg) = locationService.getCurrentLocation()
                 if (loc != null) {
-                    firestoreRepo.startSession("CS101", loc.latitude, loc.longitude, userEmail, sessionDuration) { expiresAt ->
+                    firestoreRepo.startSession(courseCode, loc.latitude, loc.longitude, userEmail, sessionDuration) { expiresAt ->
                         sessionExpiresAt = expiresAt
                         isSessionActive = true
                     }
@@ -93,9 +97,9 @@ fun FacultyDashboardScreen(
         }
     }
 
-    // Load records from Firestore in real-time
-    LaunchedEffect(Unit) {
-        firestoreRepo.getRecordsFlow().collect { records ->
+    // Load records from Firestore in real-time, filtered to this course
+    LaunchedEffect(courseCode) {
+        firestoreRepo.getRecordsFlow(courseCode).collect { records ->
             allRecords.clear()
             allRecords.addAll(records)
         }
@@ -114,7 +118,17 @@ fun FacultyDashboardScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Faculty Portal", color = Color.White) },
+                title = {
+                    Column {
+                        Text(courseName, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("Faculty Portal", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { onBack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PrimaryBlue),
                 actions = {
                     IconButton(onClick = {
@@ -185,8 +199,9 @@ fun FacultyDashboardScreen(
                         if (isSessionActive) {
                             Text(
                                 "✅ Session is Active.",
+                                style = MaterialTheme.typography.bodyLarge,
                                 color = StatusApproved,
-                                style = MaterialTheme.typography.bodyLarge
+                                fontWeight = FontWeight.SemiBold
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             
@@ -202,7 +217,7 @@ fun FacultyDashboardScreen(
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = { 
-                                    firestoreRepo.stopSession("CS101")
+                                    firestoreRepo.stopSession(courseCode)
                                     isSessionActive = false
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = StatusRejected),
@@ -269,12 +284,11 @@ fun FacultyDashboardScreen(
                 val approved = allRecords.count { it.status == AttendanceStatus.APPROVED }
                 val review = allRecords.count { it.status == AttendanceStatus.REVIEW }
                 val rejected = allRecords.count { it.status == AttendanceStatus.REJECTED }
-
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    SummaryStatCard("Total", allRecords.size.toString(), PrimaryBlue, Modifier.weight(1f))
+                    SummaryStatCard("Total", allRecords.size.toString(), TextPrimary, Modifier.weight(1f))
                     SummaryStatCard("✅ Pass", approved.toString(), StatusApproved, Modifier.weight(1f))
                     SummaryStatCard("⚠️ Review", review.toString(), StatusReview, Modifier.weight(1f))
                     SummaryStatCard("❌ Fail", rejected.toString(), StatusRejected, Modifier.weight(1f))
@@ -354,10 +368,10 @@ fun FacultyDashboardScreen(
                     FacultySubmissionCard(
                         record = record,
                         onApprove = {
-                            firestoreRepo.updateRecordStatus(record.id, AttendanceStatus.APPROVED)
+                            firestoreRepo.updateRecordStatus(record.id, com.attendmark.app.data.AttendanceStatus.APPROVED)
                         },
                         onReject = { reason ->
-                            firestoreRepo.updateRecordStatus(record.id, AttendanceStatus.REJECTED, reason)
+                            firestoreRepo.updateRecordStatus(record.id, com.attendmark.app.data.AttendanceStatus.REJECTED, reason)
                         }
                     )
                 }
@@ -382,12 +396,14 @@ fun SummaryStatCard(label: String, value: String, color: Color, modifier: Modifi
         }
     }
 }
+
 @Composable
 fun FacultySubmissionCard(
     record: AttendanceRecord,
     onApprove: () -> Unit,
     onReject: (String?) -> Unit
 ) {
+    val isManualRequest = record.matchResult == "MANUAL_REQUEST"
     val statusColor = when (record.status) {
         AttendanceStatus.APPROVED -> StatusApproved
         AttendanceStatus.REVIEW -> StatusReview
@@ -395,23 +411,52 @@ fun FacultySubmissionCard(
     }
 
     var expanded by remember { mutableStateOf(record.status == AttendanceStatus.REVIEW) }
+    var showRejectDialog by remember { mutableStateOf(false) }
+    var rejectReason by remember { mutableStateOf("") }
 
-    val animatedScore by animateFloatAsState(
-        targetValue = record.faceMatchScore.coerceIn(0f, 1f),
-        animationSpec = tween(800),
-        label = "score_anim"
-    )
+    // Reject dialog is hoisted OUTSIDE the Card so it fires correctly
+    if (showRejectDialog) {
+        AlertDialog(
+            onDismissRequest = { showRejectDialog = false },
+            title = { Text("Reject Attendance") },
+            text = {
+                Column {
+                    Text("Provide an optional reason for rejection:")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = rejectReason,
+                        onValueChange = { rejectReason = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("e.g. Camera covered") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRejectDialog = false
+                    onReject(rejectReason.ifBlank { null })
+                }) {
+                    Text("Reject", color = StatusRejected)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRejectDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        onClick = { expanded = !expanded }
+        colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            // Header row
+
+            // Clickable header row (expand/collapse) â€” does NOT swallow button clicks
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -419,15 +464,23 @@ fun FacultySubmissionCard(
                     Box(
                         modifier = Modifier
                             .size(40.dp)
-                            .background(statusColor.copy(alpha = 0.15f), CircleShape),
+                            .background(
+                                if (isManualRequest) StatusReview.copy(alpha = 0.15f)
+                                else statusColor.copy(alpha = 0.15f),
+                                CircleShape
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("👤", fontSize = 20.sp)
+                        Text(if (isManualRequest) "✏️" else "👤", fontSize = 20.sp)
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
                         Text(record.studentName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                        Text(record.studentEmail, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                        if (isManualRequest) {
+                            Text("Manual Request", style = MaterialTheme.typography.bodySmall, color = StatusReview)
+                        } else {
+                            Text(record.studentEmail, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                        }
                     }
                 }
                 Surface(
@@ -445,109 +498,31 @@ fun FacultySubmissionCard(
 
             Spacer(Modifier.height(12.dp))
 
-            // Overall Trust Score bar
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Overall Trust Score", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                Text("${record.overallScore}/100", style = MaterialTheme.typography.titleMedium, color = statusColor)
-            }
-            Spacer(Modifier.height(4.dp))
-            val animatedTrustScore by animateFloatAsState(
-                targetValue = record.overallScore / 100f,
-                animationSpec = tween(800),
-                label = "score_anim"
-            )
-            LinearProgressIndicator(
-                progress = { animatedTrustScore },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                color = statusColor,
-                trackColor = SurfaceLight
-            )
-
-            // Liveness and time info
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("🎭 ${record.livenessChallenge.replace("_", " ")}", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                Text(record.formattedTime(), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-            }
-
-            // Expanded: Review actions & Breakdown
-            if (expanded) {
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider(color = DividerColor)
-                Spacer(Modifier.height(12.dp))
-                
-                // Detailed Breakdown
-                val facePoints = (record.matchPercentage * 0.6f).toInt()
-                val livenessPoints = if (record.livenessPassed) 20 else 0
-                val backCameraValid = record.overallScore > (facePoints + livenessPoints)
-                
-                Column(modifier = Modifier.fillMaxWidth().background(SurfaceLight, RoundedCornerShape(8.dp)).padding(12.dp)) {
-                    Text("Score Breakdown", style = MaterialTheme.typography.labelMedium, color = TextPrimary)
-                    Spacer(Modifier.height(4.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Face Match (${record.matchPercentage}%)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Text("+$facePoints", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Liveness Check", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Text(if (record.livenessPassed) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (record.livenessPassed) StatusApproved else StatusRejected)
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Back Camera Image", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Text(if (backCameraValid) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (backCameraValid) StatusApproved else StatusRejected)
-                    }
-                    if (record.rejectionReason != null) {
-                        Spacer(Modifier.height(8.dp))
-                        Text("Rejection Reason:", style = MaterialTheme.typography.labelMedium, color = StatusRejected)
-                        Text(record.rejectionReason, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+            if (isManualRequest) {
+                // â”€â”€ Manual Request: show student's reason, no face score â”€â”€â”€â”€â”€â”€
+                val studentReason = record.rejectionReason
+                    ?.removePrefix("Manual Request: ")
+                    ?: "No reason provided"
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = StatusReview.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text("📩 Student's Reason:", style = MaterialTheme.typography.labelMedium, color = StatusReview)
+                        Spacer(Modifier.height(4.dp))
+                        Text(studentReason, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(record.formattedTime(), style = MaterialTheme.typography.labelSmall, color = TextSecondary)
 
                 if (record.status == AttendanceStatus.REVIEW) {
-                    var showRejectDialog by remember { mutableStateOf(false) }
-                    var rejectReason by remember { mutableStateOf("") }
-                    
-                    if (showRejectDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showRejectDialog = false },
-                            title = { Text("Reject Attendance") },
-                            text = {
-                                Column {
-                                    Text("Provide an optional reason for rejection:")
-                                    Spacer(Modifier.height(8.dp))
-                                    OutlinedTextField(
-                                        value = rejectReason,
-                                        onValueChange = { rejectReason = it },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        placeholder = { Text("e.g. Camera covered") }
-                                    )
-                                }
-                            },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showRejectDialog = false
-                                    onReject(rejectReason.ifBlank { null })
-                                }) {
-                                    Text("Reject", color = StatusRejected)
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showRejectDialog = false }) { Text("Cancel") }
-                            }
-                        )
-                    }
-
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = DividerColor)
                     Spacer(Modifier.height(12.dp))
                     Text("Faculty Review Action", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedButton(
                             onClick = { showRejectDialog = true },
                             modifier = Modifier.weight(1f),
@@ -570,7 +545,96 @@ fun FacultySubmissionCard(
                         }
                     }
                 }
+
+            } else {
+                // â”€â”€ Normal Biometric submission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                val animatedTrustScore by animateFloatAsState(
+                    targetValue = record.overallScore / 100f,
+                    animationSpec = tween(800),
+                    label = "score_anim"
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Overall Trust Score", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    Text("${record.overallScore}/100", style = MaterialTheme.typography.titleMedium, color = statusColor)
+                }
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { animatedTrustScore },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = statusColor,
+                    trackColor = SurfaceLight
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("🎭 ${record.livenessChallenge.replace("_", " ")}", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                    Text(record.formattedTime(), style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                }
+
+                if (expanded) {
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = DividerColor)
+                    Spacer(Modifier.height(12.dp))
+
+                    val facePoints = (record.matchPercentage * 0.6f).toInt()
+                    val livenessPoints = if (record.livenessPassed) 20 else 0
+                    val backCameraValid = record.overallScore > (facePoints + livenessPoints)
+
+                    Column(modifier = Modifier.fillMaxWidth().background(SurfaceLight, RoundedCornerShape(8.dp)).padding(12.dp)) {
+                        Text("Score Breakdown", style = MaterialTheme.typography.labelMedium, color = TextPrimary)
+                        Spacer(Modifier.height(4.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Face Match (${record.matchPercentage}%)", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text("+$facePoints", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Liveness Check", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(if (record.livenessPassed) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (record.livenessPassed) StatusApproved else StatusRejected)
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Back Camera Image", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Text(if (backCameraValid) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (backCameraValid) StatusApproved else StatusRejected)
+                        }
+                        if (record.rejectionReason != null) {
+                            Spacer(Modifier.height(8.dp))
+                            Text("Rejection Reason:", style = MaterialTheme.typography.labelMedium, color = StatusRejected)
+                            Text(record.rejectionReason, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                        }
+                    }
+
+                    if (record.status == AttendanceStatus.REVIEW) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Faculty Review Action", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
+                        Spacer(Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(
+                                onClick = { showRejectDialog = true },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusRejected)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Reject")
+                            }
+                            Button(
+                                onClick = onApprove,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = StatusApproved)
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Approve", color = Color.White)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
+

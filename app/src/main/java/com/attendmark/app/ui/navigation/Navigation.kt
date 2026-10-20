@@ -12,17 +12,29 @@ import androidx.navigation.navArgument
 import com.attendmark.app.data.UserPreferences
 import com.attendmark.app.ui.screens.enrollment.EnrollmentScreen
 import com.attendmark.app.ui.screens.faculty.FacultyDashboardScreen
+import com.attendmark.app.ui.screens.faculty.FacultyLobbyScreen
 import com.attendmark.app.ui.screens.login.LoginScreen
 import com.attendmark.app.ui.screens.student.AttendanceFlowScreen
 import com.attendmark.app.ui.screens.student.AttendanceResultScreen
 import com.attendmark.app.ui.screens.student.StudentDashboardScreen
+import com.attendmark.app.ui.screens.student.StudentLobbyScreen
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
     object Enrollment : Screen("enrollment")
-    object StudentDashboard : Screen("student_dashboard")
-    object FacultyDashboard : Screen("faculty_dashboard")
-    object AttendanceFlow : Screen("attendance_flow")
+    object FacultyLobby : Screen("faculty_lobby")
+    object StudentLobby : Screen("student_lobby")
+    object StudentDashboard : Screen("student_dashboard/{courseCode}/{courseName}") {
+        fun createRoute(courseCode: String, courseName: String) =
+            "student_dashboard/${courseCode}/${java.net.URLEncoder.encode(courseName, "UTF-8")}"
+    }
+    object FacultyDashboard : Screen("faculty_dashboard/{courseCode}/{courseName}") {
+        fun createRoute(courseCode: String, courseName: String) =
+            "faculty_dashboard/${courseCode}/${java.net.URLEncoder.encode(courseName, "UTF-8")}"
+    }
+    object AttendanceFlow : Screen("attendance_flow/{courseCode}") {
+        fun createRoute(courseCode: String) = "attendance_flow/$courseCode"
+    }
     object AttendanceResult : Screen("attendance_result/{recordId}") {
         fun createRoute(recordId: String) = "attendance_result/$recordId"
     }
@@ -40,9 +52,9 @@ fun AttendMarkApp() {
 
     val startDestination = when {
         !isLoggedIn -> Screen.Login.route
-        userRole == "faculty" -> Screen.FacultyDashboard.route
+        userRole == "faculty" -> Screen.FacultyLobby.route
         !isFaceEnrolled -> Screen.Enrollment.route
-        else -> Screen.StudentDashboard.route
+        else -> Screen.StudentLobby.route
     }
 
     NavHost(
@@ -52,12 +64,12 @@ fun AttendMarkApp() {
         composable(Screen.Login.route) {
             LoginScreen(
                 onStudentLogin = {
-                    navController.navigate(Screen.StudentDashboard.route) {
+                    navController.navigate(Screen.StudentLobby.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
                 },
                 onFacultyLogin = {
-                    navController.navigate(Screen.FacultyDashboard.route) {
+                    navController.navigate(Screen.FacultyLobby.route) {
                         popUpTo(Screen.Login.route) { inclusive = true }
                     }
                 },
@@ -72,7 +84,7 @@ fun AttendMarkApp() {
         composable(Screen.Enrollment.route) {
             EnrollmentScreen(
                 onEnrollmentComplete = {
-                    navController.navigate(Screen.StudentDashboard.route) {
+                    navController.navigate(Screen.StudentLobby.route) {
                         popUpTo(Screen.Enrollment.route) { inclusive = true }
                     }
                 },
@@ -84,10 +96,10 @@ fun AttendMarkApp() {
             )
         }
 
-        composable(Screen.StudentDashboard.route) {
-            StudentDashboardScreen(
-                onMarkAttendance = {
-                    navController.navigate(Screen.AttendanceFlow.route)
+        composable(Screen.FacultyLobby.route) {
+            FacultyLobbyScreen(
+                onOpenCourse = { course ->
+                    navController.navigate(Screen.FacultyDashboard.createRoute(course.classCode, course.name))
                 },
                 onLogout = {
                     navController.navigate(Screen.Login.route) {
@@ -97,8 +109,11 @@ fun AttendMarkApp() {
             )
         }
 
-        composable(Screen.FacultyDashboard.route) {
-            FacultyDashboardScreen(
+        composable(Screen.StudentLobby.route) {
+            StudentLobbyScreen(
+                onOpenCourse = { course ->
+                    navController.navigate(Screen.StudentDashboard.createRoute(course.classCode, course.name))
+                },
                 onLogout = {
                     navController.navigate(Screen.Login.route) {
                         popUpTo(0) { inclusive = true }
@@ -107,8 +122,66 @@ fun AttendMarkApp() {
             )
         }
 
-        composable(Screen.AttendanceFlow.route) {
+        composable(
+            route = Screen.StudentDashboard.route,
+            arguments = listOf(
+                navArgument("courseCode") { type = NavType.StringType },
+                navArgument("courseName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val courseCode = backStackEntry.arguments?.getString("courseCode") ?: ""
+            val courseName = java.net.URLDecoder.decode(
+                backStackEntry.arguments?.getString("courseName") ?: "", "UTF-8"
+            )
+            StudentDashboardScreen(
+                courseCode = courseCode,
+                courseName = courseName,
+                onMarkAttendance = {
+                    navController.navigate(Screen.AttendanceFlow.createRoute(courseCode))
+                },
+                onLogout = {
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                },
+                onBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable(
+            route = Screen.FacultyDashboard.route,
+            arguments = listOf(
+                navArgument("courseCode") { type = NavType.StringType },
+                navArgument("courseName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val courseCode = backStackEntry.arguments?.getString("courseCode") ?: ""
+            val courseName = java.net.URLDecoder.decode(
+                backStackEntry.arguments?.getString("courseName") ?: "", "UTF-8"
+            )
+            FacultyDashboardScreen(
+                courseCode = courseCode,
+                courseName = courseName,
+                onLogout = {
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                },
+                onBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable(
+            route = Screen.AttendanceFlow.route,
+            arguments = listOf(navArgument("courseCode") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val courseCode = backStackEntry.arguments?.getString("courseCode") ?: "CS101"
             AttendanceFlowScreen(
+                courseCode = courseCode,
                 onResult = { recordId ->
                     navController.navigate(Screen.AttendanceResult.createRoute(recordId)) {
                         popUpTo(Screen.AttendanceFlow.route) { inclusive = true }
@@ -128,11 +201,10 @@ fun AttendMarkApp() {
             AttendanceResultScreen(
                 recordId = recordId,
                 onBack = {
-                    navController.navigate(Screen.StudentDashboard.route) {
-                        popUpTo(0) { inclusive = true }
-                    }
+                    navController.popBackStack()
                 }
             )
         }
     }
 }
+

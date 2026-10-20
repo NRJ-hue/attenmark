@@ -56,6 +56,7 @@ enum class AttendanceFlowStep {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AttendanceFlowScreen(
+    courseCode: String = "CS101",
     onResult: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -229,7 +230,7 @@ fun AttendanceFlowScreen(
                                     val record = AttendanceRecord(
                                         studentName = userName,
                                         studentEmail = userEmail,
-                                        courseCode = "CS101",
+                                        courseCode = courseCode,
                                         faceMatchScore = similarity,
                                         matchPercentage = matchPct,
                                         matchResult = matchResult.name,

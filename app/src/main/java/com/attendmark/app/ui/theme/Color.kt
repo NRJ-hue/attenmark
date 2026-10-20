@@ -17,6 +17,7 @@ val AccentRed = Color(0xFFC62828)
 val StatusApproved = Color(0xFF2E7D32)
 val StatusReview = Color(0xFFF57F17)
 val StatusRejected = Color(0xFFC62828)
+val SuccessGreen = Color(0xFF2E7D32)
 
 // Neutral
 val SurfaceLight = Color(0xFFF5F7FA)

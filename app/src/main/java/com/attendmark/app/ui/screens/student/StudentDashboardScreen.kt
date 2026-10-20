@@ -34,8 +34,11 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudentDashboardScreen(
+    courseCode: String = "CS101",
+    courseName: String = "Course",
     onMarkAttendance: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val prefs = remember { UserPreferences(context) }
@@ -63,7 +66,7 @@ fun StudentDashboardScreen(
             scope.launch {
                 val (loc, errorMsg) = locationService.getCurrentLocation()
                 if (loc != null) {
-                    val session = firestoreRepo.getActiveSession("CS101")
+                    val session = firestoreRepo.getActiveSession(courseCode)
                     if (session != null) {
                         val facLat = session["latitude"] as? Double ?: 0.0
                         val facLon = session["longitude"] as? Double ?: 0.0
@@ -76,7 +79,7 @@ fun StudentDashboardScreen(
                             locationError = "You are ${distance.toInt()} meters away. You must be within 50 meters of the classroom."
                         }
                     } else {
-                        locationError = "No active attendance session found. Ask your faculty to start a session."
+                        locationError = "No active session for $courseName. Ask your faculty to start a session."
                     }
                 } else {
                     locationError = "Location Error: ${errorMsg ?: "Ensure GPS is ON"}"
@@ -88,11 +91,12 @@ fun StudentDashboardScreen(
         }
     }
 
-    LaunchedEffect(userEmail) {
+    LaunchedEffect(userEmail, courseCode) {
         if (userEmail.isNotBlank()) {
-            firestoreRepo.getRecordsFlow().collect { records ->
+            firestoreRepo.getRecordsFlow(courseCode).collect { records ->
                 attendanceRecords.clear()
                 attendanceRecords.addAll(records.filter { it.studentEmail == userEmail })
+
             }
         }
     }
@@ -126,7 +130,7 @@ fun StudentDashboardScreen(
                         val record = AttendanceRecord(
                             studentName = userName,
                             studentEmail = userEmail,
-                            courseCode = "CS101",
+                            courseCode = courseCode,
                             faceMatchScore = 0f,
                             matchPercentage = 0,
                             matchResult = "MANUAL_REQUEST",
@@ -153,7 +157,17 @@ fun StudentDashboardScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("AttendMark", color = Color.White) },
+                title = {
+                    Column {
+                        Text(courseName, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text("Student View", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = { onBack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PrimaryBlue),
                 actions = {
                     IconButton(onClick = {
