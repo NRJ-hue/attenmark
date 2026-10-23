@@ -28,6 +28,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.attendmark.app.data.AuthRepository
+import com.attendmark.app.data.AuthResult
 import com.attendmark.app.data.DummyAuth
 import com.attendmark.app.data.UserPreferences
 import com.attendmark.app.ui.theme.*
@@ -42,6 +44,7 @@ fun LoginScreen(
 ) {
     val context = LocalContext.current
     val prefs = remember { UserPreferences(context) }
+    val authRepo = remember { AuthRepository() }
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
 
@@ -182,33 +185,36 @@ fun LoginScreen(
                     // Login Button
                     Button(
                         onClick = {
-                            if (email.isBlank() || password.isBlank()) {
+                            val trimmedEmail = email.trim()
+                            val trimmedPassword = password.trim()
+                            if (trimmedEmail.isBlank() || trimmedPassword.isBlank()) {
                                 errorMessage = "Please enter email and password"
                                 return@Button
                             }
 
                             isLoading = true
+                            errorMessage = null
                             scope.launch {
-                                // Simulate network delay
-                                kotlinx.coroutines.delay(1000)
-                                isLoading = false
+                                when (val result = authRepo.login(trimmedEmail, trimmedPassword)) {
+                                    is AuthResult.Success -> {
+                                        val user = result.user
+                                        prefs.saveLoginState(user.email, user.role, user.name, user.uid)
+                                        isLoading = false
 
-                                val result = DummyAuth.login(email, password)
-                                if (result != null) {
-                                    // Save user session
-                                    prefs.saveLoginState(email, result.role, result.name)
-
-                                    if (result.role == "student") {
-                                        if (isFaceEnrolled) {
-                                            onStudentLogin()
+                                        if (user.role == "student") {
+                                            if (isFaceEnrolled) {
+                                                onStudentLogin()
+                                            } else {
+                                                onEnrollmentNeeded()
+                                            }
                                         } else {
-                                            onEnrollmentNeeded()
+                                            onFacultyLogin()
                                         }
-                                    } else {
-                                        onFacultyLogin()
                                     }
-                                } else {
-                                    errorMessage = "Invalid email or password"
+                                    is AuthResult.Error -> {
+                                        isLoading = false
+                                        errorMessage = result.message
+                                    }
                                 }
                             }
                         },
@@ -240,12 +246,12 @@ fun LoginScreen(
                             color = TextSecondary
                         )
                         Text(
-                            "student@test.com / pass123",
+                            "student@test.com / student123",
                             style = MaterialTheme.typography.bodySmall,
                             color = PrimaryBlue
                         )
                         Text(
-                            "faculty@test.com / pass123",
+                            "faculty@test.com / faculty123",
                             style = MaterialTheme.typography.bodySmall,
                             color = PrimaryBlue
                         )

@@ -18,6 +18,7 @@ class UserPreferences(private val context: Context) {
         val KEY_USER_EMAIL = stringPreferencesKey("user_email")
         val KEY_USER_ROLE = stringPreferencesKey("user_role")
         val KEY_USER_NAME = stringPreferencesKey("user_name")
+        val KEY_USER_UID = stringPreferencesKey("user_uid")
         val KEY_IS_LOGGED_IN = booleanPreferencesKey("is_logged_in")
         val KEY_FACE_ENROLLED = booleanPreferencesKey("face_enrolled")
         // Store face embedding as JSON string
@@ -40,6 +41,10 @@ class UserPreferences(private val context: Context) {
         prefs[KEY_USER_NAME] ?: ""
     }
 
+    val userUid: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[KEY_USER_UID] ?: ""
+    }
+
     val isFaceEnrolled: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_FACE_ENROLLED] ?: false
     }
@@ -48,11 +53,12 @@ class UserPreferences(private val context: Context) {
         prefs[KEY_FACE_EMBEDDING] ?: ""
     }
 
-    suspend fun saveLoginState(email: String, role: String, name: String) {
+    suspend fun saveLoginState(email: String, role: String, name: String, uid: String = "") {
         context.dataStore.edit { prefs ->
             prefs[KEY_USER_EMAIL] = email
             prefs[KEY_USER_ROLE] = role
             prefs[KEY_USER_NAME] = name
+            prefs[KEY_USER_UID] = uid
             prefs[KEY_IS_LOGGED_IN] = true
         }
     }
@@ -72,11 +78,15 @@ class UserPreferences(private val context: Context) {
     }
 
     suspend fun logout() {
+        try {
+            com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+        } catch (_: Exception) {}
         context.dataStore.edit { prefs ->
             prefs[KEY_IS_LOGGED_IN] = false
             prefs[KEY_USER_EMAIL] = ""
             prefs[KEY_USER_ROLE] = ""
             prefs[KEY_USER_NAME] = ""
+            prefs[KEY_USER_UID] = ""
             // Keep face enrollment on logout so student doesn't need to re-enroll
         }
     }
