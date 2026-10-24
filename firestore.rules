@@ -1,0 +1,119 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isUser(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isFaculty() {
+      return isAuthenticated() && getUserData().role == 'faculty';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserData().role == 'student';
+    }
+
+    // 1. User Profiles (users/{uid})
+    match /users/{uid} {
+      allow read: if isAuthenticated();
+
+      // Self-registration can strictly assign ONLY 'student' role.
+      // Faculty role can never be self-assigned.
+      allow create: if isUser(uid) && 
+                       request.resource.data.role == 'student' &&
+                       request.resource.data.email == request.auth.token.email;
+
+      // Users cannot change their assigned role or email.
+      allow update: if isUser(uid) && 
+                       request.resource.data.role == resource.data.role &&
+                       request.resource.data.email == resource.data.email;
+
+      allow delete: if false;
+    }
+
+    // 2. Courses (courses/{courseId})
+    match /courses/{courseId} {
+      allow read: if isAuthenticated();
+
+      allow create: if isFaculty() && 
+                       request.resource.data.facultyEmail == request.auth.token.email;
+
+      // Faculty owner can manage course; students can only update enrolledStudents list when joining
+      allow update: if (isFaculty() && resource.data.facultyEmail == request.auth.token.email) ||
+                       (isStudent() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['enrolledStudents']));
+
+      allow delete: if isFaculty() && resource.data.facultyEmail == request.auth.token.email;
+    }
+
+    // 3. Active Session Pointers (sessions/{courseCode})
+    match /sessions/{courseCode} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isFaculty() && 
+                               request.resource.data.facultyEmail == request.auth.token.email;
+
+      allow delete: if false;
+    }
+
+    // 4. Historical & Immutable Attendance Sessions (attendance_sessions/{sessionId})
+    match /attendance_sessions/{sessionId} {
+      allow read: if isAuthenticated();
+
+      allow create, update: if isFaculty() && 
+                               request.resource.data.facultyEmail == request.auth.token.email;
+
+      allow delete: if false;
+    }
+
+    // 5. QR Tokens (qr_tokens/{tokenId})
+    match /qr_tokens/{tokenId} {
+      allow read: if isAuthenticated();
+      // QR tokens can strictly be issued ONLY by backend Cloud Functions
+      allow create, update, delete: if false;
+    }
+
+    // 6. Attendance Claims (attendance_claims/{claimId})
+    match /attendance_claims/{claimId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.studentUid || isFaculty());
+      // Claims are issued strictly by backend Cloud Functions during validated QR check
+      allow create, update, delete: if false;
+    }
+
+    // 7. Attendance Records (attendance_records/{recordId})
+    match /attendance_records/{recordId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.studentUid || isFaculty());
+
+      // Student submission constraints:
+      // - Must be authenticated
+      // - Must submit on their own behalf (studentUid matches caller uid)
+      // - Cannot directly claim APPROVED status (must be REVIEW, PENDING, or REJECTED)
+      // - Must specify a valid sessionId
+      // - Document ID must be "${sessionId}_${studentUid}" ensuring atomic duplicate prevention on create
+      allow create: if (isAuthenticated() &&
+                        request.auth.uid == request.resource.data.studentUid &&
+                        request.resource.data.studentEmail == request.auth.token.email &&
+                        request.resource.data.status != 'APPROVED' &&
+                        request.resource.data.sessionId != null &&
+                        request.resource.data.sessionId != '') ||
+                       isFaculty();
+
+      // Update constraints:
+      // Students cannot modify records once submitted.
+      // Only authorized faculty can approve or reject records under review.
+      allow update: if isFaculty() &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
+
+      allow delete: if false;
+    }
+  }
+}

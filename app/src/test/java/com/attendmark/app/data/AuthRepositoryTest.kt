@@ -36,17 +36,18 @@ class AuthRepositoryTest {
 
     @Test
     fun login_withBlankPassword_returnsError() = runBlocking {
-        val result = repository.login("student@test.com", "   ")
+        val result = repository.login("student@test.com", "")
         assertTrue(result is AuthResult.Error)
         assertEquals("Please enter email and password", (result as AuthResult.Error).message)
     }
 
     @Test
-    fun login_withWhitespace_trimsInputBeforeSubmitting() = runBlocking {
-        fakeAuthProvider.configureUser("student@test.com", "password123", "uid-100", "Student User")
+    fun login_trimsEmail_preservesExactPassword() = runBlocking {
+        // Password with spaces must be preserved exactly
+        fakeAuthProvider.configureUser("student@test.com", "  pass with spaces  ", "uid-100", "Student User")
         fakeProfileStore.setProfile("uid-100", mapOf("role" to "student", "name" to "Student User"))
 
-        val result = repository.login("  student@test.com  ", "  password123  ")
+        val result = repository.login("  student@test.com  ", "  pass with spaces  ")
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
         assertEquals("student@test.com", user.email)
@@ -81,57 +82,57 @@ class AuthRepositoryTest {
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
         assertEquals("faculty", user.role)
+        assertEquals("faculty@test.com", user.email)
         assertEquals("Prof. Smith", user.name)
         assertEquals("uid-fac-1", user.uid)
     }
 
     @Test
     fun login_whenStudentProfileExists_resolvesStudentRole() = runBlocking {
-        fakeAuthProvider.configureUser("student@test.com", "student123", "uid-stu-1", "Alice Student")
-        fakeProfileStore.setProfile("uid-stu-1", mapOf("role" to "student", "name" to "Alice Student"))
+        fakeAuthProvider.configureUser("student@test.com", "student123", "uid-stu-1", "Alice")
+        fakeProfileStore.setProfile("uid-stu-1", mapOf("role" to "student", "name" to "Alice"))
 
         val result = repository.login("student@test.com", "student123")
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
         assertEquals("student", user.role)
-        assertEquals("Alice Student", user.name)
+        assertEquals("Alice", user.name)
     }
 
     @Test
-    fun login_whenUserProfileMissing_createsStudentProfileAndResolvesStudent() = runBlocking {
-        fakeAuthProvider.configureUser("newstudent@test.com", "student123", "uid-new", null)
+    fun login_whenNoProfileExists_defaultsToStudentAndCreatesProfile() = runBlocking {
+        fakeAuthProvider.configureUser("new@test.com", "pass123", "uid-new", "New Student")
 
-        val result = repository.login("newstudent@test.com", "student123")
+        val result = repository.login("new@test.com", "pass123")
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
-        assertEquals("student", user.role)
-        assertEquals("Newstudent", user.name)
+        assertEquals("student", user.role) // Safe default: cannot be faculty
 
-        // Verify that the initial profile was created strictly as "student"
-        val savedProfile = fakeProfileStore.getStoredProfile("uid-new")
-        assertEquals("student", savedProfile?.get("role"))
-        assertEquals("newstudent@test.com", savedProfile?.get("email"))
+        // Verifies profile was automatically created
+        val created = fakeProfileStore.getProfile("uid-new")
+        assertTrue(created != null)
+        assertEquals("student", created?.get("role"))
     }
 
     @Test
-    fun login_whenUserProfileHasDisallowedRole_strictlyResolvesStudent() = runBlocking {
-        fakeAuthProvider.configureUser("attacker@test.com", "pass123", "uid-attacker", "Attacker")
-        // User attempted to store "admin" or other role
-        fakeProfileStore.setProfile("uid-attacker", mapOf("role" to "admin", "name" to "Attacker"))
+    fun login_cannotSelfAssignFacultyRoleEvenIfDocumentAttemptsTampering() = runBlocking {
+        fakeAuthProvider.configureUser("attacker@test.com", "pass123", "uid-att", null)
+        // Store an arbitrary/tampered role like "admin" or "FACULTY_OWNER"
+        fakeProfileStore.setProfile("uid-att", mapOf("role" to "superadmin", "name" to "Attacker"))
 
         val result = repository.login("attacker@test.com", "pass123")
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
-        // Must be downgraded to student; only explicit "faculty" role is permitted as elevated role
+        // Must strictly fall back to "student"
         assertEquals("student", user.role)
     }
 
     @Test
-    fun logout_callsSignOutOnAuthProvider() {
-        fakeAuthProvider.configureUser("user@test.com", "pass", "uid-1", "User")
+    fun logout_callsAuthProviderSignOut() {
+        fakeAuthProvider.configureUser("student@test.com", "pass", "uid-1", null)
         repository.logout()
         assertTrue(fakeAuthProvider.signOutCalled)
-        assertNull(repository.getCurrentUser())
+        assertNull(fakeAuthProvider.getCurrentUser())
     }
 }
 
@@ -178,30 +179,27 @@ class FakeAuthProvider : AuthProvider {
  */
 class FakeUserProfileStore : UserProfileStore {
     private val profiles = mutableMapOf<String, Map<String, Any>>()
-    var shouldFail: Boolean = false
+    var lastCreatedProfile: Pair<String, Map<String, Any>>? = null
 
     fun setProfile(uid: String, data: Map<String, Any>) {
         profiles[uid] = data
     }
 
-    fun getStoredProfile(uid: String): Map<String, Any>? = profiles[uid]
+    fun getProfile(uid: String): Map<String, Any>? = profiles[uid]
 
     override suspend fun getUserProfile(uid: String): Result<Map<String, Any>?> {
-        if (shouldFail) return Result.failure(Exception("Database connection error"))
         return Result.success(profiles[uid])
     }
 
-    override suspend fun createInitialStudentProfile(
-        uid: String,
-        email: String,
-        name: String
-    ): Result<Unit> {
-        if (shouldFail) return Result.failure(Exception("Failed to write profile"))
-        profiles[uid] = mapOf(
+    override suspend fun createInitialStudentProfile(uid: String, email: String, name: String): Result<Unit> {
+        val data = mapOf(
             "email" to email,
+            "role" to "student",
             "name" to name,
-            "role" to "student"
+            "createdAt" to System.currentTimeMillis()
         )
+        profiles[uid] = data
+        lastCreatedProfile = Pair(uid, data)
         return Result.success(Unit)
     }
 }

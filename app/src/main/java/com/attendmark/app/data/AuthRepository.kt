@@ -119,13 +119,12 @@ class AuthRepository(
 
     suspend fun login(email: String, password: String): AuthResult {
         val cleanEmail = email.trim()
-        val cleanPassword = password.trim()
 
-        if (cleanEmail.isBlank() || cleanPassword.isBlank()) {
+        if (cleanEmail.isBlank() || password.isEmpty()) {
             return AuthResult.Error("Please enter email and password")
         }
 
-        val authResult = authProvider.signIn(cleanEmail, cleanPassword)
+        val authResult = authProvider.signIn(cleanEmail, password)
         if (authResult.isFailure) {
             val exception = authResult.exceptionOrNull()
             return mapAuthError(exception)

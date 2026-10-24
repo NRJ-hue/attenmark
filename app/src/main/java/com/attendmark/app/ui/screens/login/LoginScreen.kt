@@ -186,8 +186,8 @@ fun LoginScreen(
                     Button(
                         onClick = {
                             val trimmedEmail = email.trim()
-                            val trimmedPassword = password.trim()
-                            if (trimmedEmail.isBlank() || trimmedPassword.isBlank()) {
+                            val exactPassword = password
+                            if (trimmedEmail.isBlank() || exactPassword.isEmpty()) {
                                 errorMessage = "Please enter email and password"
                                 return@Button
                             }
@@ -195,7 +195,7 @@ fun LoginScreen(
                             isLoading = true
                             errorMessage = null
                             scope.launch {
-                                when (val result = authRepo.login(trimmedEmail, trimmedPassword)) {
+                                when (val result = authRepo.login(trimmedEmail, exactPassword)) {
                                     is AuthResult.Success -> {
                                         val user = result.user
                                         prefs.saveLoginState(user.email, user.role, user.name, user.uid)

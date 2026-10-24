@@ -68,6 +68,7 @@ fun AttendanceFlowScreen(
 
     val userEmail by prefs.userEmail.collectAsState(initial = "")
     val userName by prefs.userName.collectAsState(initial = "")
+    val userUid by prefs.userUid.collectAsState(initial = "")
     val faceEmbeddingJson by prefs.faceEmbedding.collectAsState(initial = "")
 
     var currentStep by remember { mutableStateOf(AttendanceFlowStep.LIVENESS_CHALLENGE) }
@@ -216,9 +217,10 @@ fun AttendanceFlowScreen(
                                     }
 
                                     // Status Overrides based on total score
+                                    // Students cannot submit directly as APPROVED per Firestore rules;
+                                    // High trust scores submit as REVIEW awaiting confirmation
                                     val finalStatus = when {
                                         matchResult == FaceRecognitionService.MatchResult.NO_MATCH || matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH -> AttendanceStatus.REJECTED
-                                        trustScore >= 80 -> AttendanceStatus.APPROVED
                                         trustScore >= 50 -> AttendanceStatus.REVIEW
                                         else -> AttendanceStatus.REJECTED
                                     }
@@ -227,7 +229,25 @@ fun AttendanceFlowScreen(
                                     val classroomBase64 = classroomCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
                                     val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
 
+                                    val firestoreRepo = FirestoreRepository()
+                                    val activeSession = withContext(Dispatchers.IO) {
+                                        firestoreRepo.getActiveSession(courseCode)
+                                    }
+                                    val currentSessionId = (activeSession?.get("sessionId") as? String)
+                                        ?: "session_${courseCode}_${System.currentTimeMillis()}"
+                                    val currentUid = if (userUid.isNotBlank()) userUid
+                                        else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
+
+                                    val docId = if (currentSessionId.isNotBlank() && currentUid.isNotBlank()) {
+                                        "${currentSessionId}_${currentUid}"
+                                    } else {
+                                        java.util.UUID.randomUUID().toString()
+                                    }
+
                                     val record = AttendanceRecord(
+                                        id = docId,
+                                        sessionId = currentSessionId,
+                                        studentUid = currentUid,
                                         studentName = userName,
                                         studentEmail = userEmail,
                                         courseCode = courseCode,
@@ -242,7 +262,6 @@ fun AttendanceFlowScreen(
                                         classroomPhotoBase64 = classroomBase64
                                     )
                                     
-                                    val firestoreRepo = FirestoreRepository()
                                     firestoreRepo.submitRecord(
                                         record = record,
                                         onSuccess = { onResult(record.id) },

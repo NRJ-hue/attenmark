@@ -4,10 +4,12 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
- * Represents a completed attendance submission record stored locally on faculty's device.
+ * Represents a completed attendance submission record.
  */
 data class AttendanceRecord(
     val id: String = UUID.randomUUID().toString(),
+    val sessionId: String = "",       // Unique ID of the attendance session
+    val studentUid: String = "",      // Authenticated student's Firebase UID
     val studentName: String,
     val studentEmail: String,
     val courseCode: String,
@@ -36,8 +38,7 @@ enum class AttendanceStatus(val label: String, val description: String) {
 }
 
 /**
- * In-memory store for attendance records (MVP — no backend, no database).
- * In production, this would sync to a server.
+ * In-memory store for attendance records.
  */
 object AttendanceStore {
     private val records = mutableListOf<AttendanceRecord>()

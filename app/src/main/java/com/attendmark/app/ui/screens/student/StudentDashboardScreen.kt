@@ -46,6 +46,7 @@ fun StudentDashboardScreen(
 
     val userName by prefs.userName.collectAsState(initial = "Student")
     val userEmail by prefs.userEmail.collectAsState(initial = "")
+    val userUid by prefs.userUid.collectAsState(initial = "")
     val isFaceEnrolled by prefs.isFaceEnrolled.collectAsState(initial = false)
 
     val attendanceRecords = remember { mutableStateListOf<AttendanceRecord>() }
@@ -127,21 +128,40 @@ fun StudentDashboardScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val record = AttendanceRecord(
-                            studentName = userName,
-                            studentEmail = userEmail,
-                            courseCode = courseCode,
-                            faceMatchScore = 0f,
-                            matchPercentage = 0,
-                            matchResult = "MANUAL_REQUEST",
-                            livenessChallenge = "NONE",
-                            livenessPassed = false,
-                            status = AttendanceStatus.REVIEW,
-                            overallScore = 0,
-                            rejectionReason = "Manual Request: $reasonText" // Store the student's message here temporarily for the professor to see
-                        )
-                        firestoreRepo.submitRecord(record, onSuccess = {}, onFailure = {})
-                        showManualRequestDialog = false
+                        scope.launch {
+                            val activeSession = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                firestoreRepo.getActiveSession(courseCode)
+                            }
+                            val currentSessionId = (activeSession?.get("sessionId") as? String)
+                                ?: "manual_${courseCode}_${System.currentTimeMillis()}"
+                            val currentUid = if (userUid.isNotBlank()) userUid
+                                else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
+
+                            val docId = if (currentSessionId.isNotBlank() && currentUid.isNotBlank()) {
+                                "${currentSessionId}_${currentUid}"
+                            } else {
+                                java.util.UUID.randomUUID().toString()
+                            }
+
+                            val record = AttendanceRecord(
+                                id = docId,
+                                sessionId = currentSessionId,
+                                studentUid = currentUid,
+                                studentName = userName,
+                                studentEmail = userEmail,
+                                courseCode = courseCode,
+                                faceMatchScore = 0f,
+                                matchPercentage = 0,
+                                matchResult = "MANUAL_REQUEST",
+                                livenessChallenge = "NONE",
+                                livenessPassed = false,
+                                status = AttendanceStatus.REVIEW,
+                                overallScore = 0,
+                                rejectionReason = "Manual Request: $reasonText"
+                            )
+                            firestoreRepo.submitRecord(record, onSuccess = {}, onFailure = {})
+                            showManualRequestDialog = false
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
                 ) {
