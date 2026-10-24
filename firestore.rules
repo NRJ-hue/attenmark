@@ -99,6 +99,16 @@ service cloud.firestore {
                );
       }
 
+      function isAuthorizedFacultyForRecordData(data) {
+        return isFaculty() &&
+               (
+                 (exists(/databases/$(database)/documents/attendance_sessions/$(data.sessionId)) &&
+                  get(/databases/$(database)/documents/attendance_sessions/$(data.sessionId)).data.facultyEmail == request.auth.token.email) ||
+                 (exists(/databases/$(database)/documents/sessions/$(data.courseCode)) &&
+                  get(/databases/$(database)/documents/sessions/$(data.courseCode)).data.facultyEmail == request.auth.token.email)
+               );
+      }
+
       // Student submission constraints:
       // - Must be authenticated
       // - Must submit on their own behalf (studentUid matches caller uid)
@@ -106,6 +116,8 @@ service cloud.firestore {
       // - Must specify a valid sessionId
       // - Document ID must strictly equal "${sessionId}_${studentUid}" to enforce one record per student per session
       // - Must possess an authorized attendance claim issued by validateQrToken (NO manual-request bypass)
+      // - Claim studentUid, sessionId, and courseCode must strictly match request data
+      // - Faculty write must be by authorized faculty owning the course/session
       allow create: if (isAuthenticated() &&
                         request.auth.uid == request.resource.data.studentUid &&
                         recordId == (request.resource.data.sessionId + "_" + request.auth.uid) &&
@@ -113,14 +125,25 @@ service cloud.firestore {
                         request.resource.data.status != 'APPROVED' &&
                         request.resource.data.sessionId != null &&
                         request.resource.data.sessionId != '' &&
-                        exists(/databases/$(database)/documents/attendance_claims/$(recordId))) ||
-                       (isFaculty() && recordId == (request.resource.data.sessionId + "_" + request.resource.data.studentUid));
+                        exists(/databases/$(database)/documents/attendance_claims/$(recordId)) &&
+                        get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.studentUid == request.auth.uid &&
+                        get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.sessionId == request.resource.data.sessionId &&
+                        (!('courseCode' in get(/databases/$(database)/documents/attendance_claims/$(recordId)).data) ||
+                         get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.courseCode == request.resource.data.courseCode)) ||
+                       (isAuthorizedFacultyForRecordData(request.resource.data) &&
+                        recordId == (request.resource.data.sessionId + "_" + request.resource.data.studentUid));
 
       // Update constraints:
       // Students cannot modify records once submitted.
       // Only authorized faculty who owns the course/session can approve or reject records.
+      // Retries or repeated manual approvals are safe as long as core identifiers (studentUid, sessionId, courseCode) are preserved.
       allow update: if isAuthorizedFacultyForRecord() &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
+                       (request.resource.data.diff(resource.data).affectedKeys().size() == 0 ||
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'rejectionReason']) ||
+                        (resource.data.matchResult == 'MANUAL_REQUEST_APPROVED' &&
+                         request.resource.data.studentUid == resource.data.studentUid &&
+                         request.resource.data.sessionId == resource.data.sessionId &&
+                         request.resource.data.courseCode == resource.data.courseCode));
 
       allow delete: if false;
     }
@@ -159,7 +182,8 @@ service cloud.firestore {
       // Only authorized faculty who owns the course/session can approve or reject manual attendance requests.
       // Students cannot modify their manual request once submitted.
       allow update: if isAuthorizedFacultyForManualRequest() &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
+                       (request.resource.data.diff(resource.data).affectedKeys().size() == 0 ||
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'rejectionReason']));
 
       allow delete: if false;
     }

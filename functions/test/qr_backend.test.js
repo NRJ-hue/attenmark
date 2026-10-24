@@ -418,6 +418,52 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       );
     });
 
+    it("validates token at refresh boundary (26s after issue) within the 30s validity window", async function () {
+      const boundaryTokenId = "boundary-token-" + Date.now();
+      const now = Date.now();
+      // Issued 26 seconds ago, expiring in 4 seconds (total 30s validity)
+      await db.collection("qr_tokens").doc(boundaryTokenId).set({
+        tokenId: boundaryTokenId,
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        facultyUid: FACULTY_UID,
+        issuedAt: now - 26000,
+        expiresAt: now + 4000
+      });
+
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+      const res = await validateQrTokenCore(db, studentAuth, {
+        tokenId: boundaryTokenId,
+        courseCode: COURSE_CODE,
+        sessionId: activeSessionId
+      });
+      assert.strictEqual(res.valid, true);
+    });
+
+    it("rejects token past the 30s validity window (31s after issue) with deadline-exceeded", async function () {
+      const pastTokenId = "past-token-" + Date.now();
+      const now = Date.now();
+      // Issued 31 seconds ago, expired 1 second ago (total 30s validity)
+      await db.collection("qr_tokens").doc(pastTokenId).set({
+        tokenId: pastTokenId,
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        facultyUid: FACULTY_UID,
+        issuedAt: now - 31000,
+        expiresAt: now - 1000
+      });
+
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: pastTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
+        }),
+        (err) => err.code === "deadline-exceeded"
+      );
+    });
+
     it("rejects token when session is closed or inactive", async function () {
       await db.collection("sessions").doc(COURSE_CODE).update({ isActive: false });
 

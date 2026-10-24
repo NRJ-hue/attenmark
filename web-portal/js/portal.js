@@ -16,6 +16,7 @@ import {
   query,
   where,
   onSnapshot,
+  writeBatch,
   httpsCallable
 } from "./firebase-config.js";
 
@@ -753,26 +754,39 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
 async function approveRecord(recordId, isManual = false) {
   try {
     if (isManual) {
-      // 1. Mark manual request as approved
-      await updateDoc(doc(db, "manual_attendance_requests", recordId), {
+      const manualDoc = manualRequests.find((m) => m.id === recordId);
+      if (!manualDoc) {
+        throw new Error("Manual request document not found.");
+      }
+      if (manualDoc.status === "APPROVED") {
+        console.warn("Manual request is already approved.");
+        return;
+      }
+
+      // Atomic batch write: simultaneously updates manual request status to APPROVED
+      // and writes the final verified attendance record.
+      // Guarantees no partial state where one succeeds while the other fails.
+      const batch = writeBatch(db);
+      const manualRef = doc(db, "manual_attendance_requests", recordId);
+      const recordRef = doc(db, "attendance_records", recordId);
+
+      batch.update(manualRef, {
         status: "APPROVED"
       });
-      // 2. Authorized faculty writes the resolved final attendance record in attendance_records
-      const manualDoc = manualRequests.find((m) => m.id === recordId);
-      if (manualDoc) {
-        await setDoc(doc(db, "attendance_records", recordId), {
-          sessionId: manualDoc.sessionId,
-          studentUid: manualDoc.studentUid,
-          studentName: manualDoc.studentName || "Student",
-          studentEmail: manualDoc.studentEmail,
-          courseCode: manualDoc.courseCode,
-          status: "APPROVED",
-          matchResult: "MANUAL_REQUEST_APPROVED",
-          overallScore: 100,
-          timestamp: Date.now(),
-          rejectionReason: null
-        });
-      }
+      batch.set(recordRef, {
+        sessionId: manualDoc.sessionId,
+        studentUid: manualDoc.studentUid,
+        studentName: manualDoc.studentName || "Student",
+        studentEmail: manualDoc.studentEmail,
+        courseCode: manualDoc.courseCode,
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+
+      await batch.commit();
     } else {
       await updateDoc(doc(db, "attendance_records", recordId), {
         status: "APPROVED"

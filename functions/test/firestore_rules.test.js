@@ -6,7 +6,7 @@ const {
   assertFails,
   assertSucceeds
 } = require("@firebase/rules-unit-testing");
-const { doc, getDoc, setDoc, updateDoc } = require("firebase/firestore");
+const { doc, getDoc, setDoc, updateDoc, writeBatch } = require("firebase/firestore");
 
 describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", function () {
   this.timeout(15000);
@@ -251,6 +251,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           sessionId: sessionId,
           studentUid: "student-uid-1",
           studentEmail: "student1@test.com",
+          courseCode: "CS101",
           status: "CLAIMED"
         });
       });
@@ -299,6 +300,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           sessionId: sessionId,
           studentUid: "student-uid-1",
           studentEmail: "student1@test.com",
+          courseCode: "CS101",
           status: "CLAIMED"
         });
       });
@@ -330,6 +332,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           sessionId: sessionId,
           studentUid: "student-uid-1",
           studentEmail: "student1@test.com",
+          courseCode: "CS101",
           status: "CLAIMED"
         });
         await setDoc(doc(adminDb, `attendance_records/${validClaimDocId}`), {
@@ -390,6 +393,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           sessionId: sessionId,
           studentUid: "student-uid-1",
           studentEmail: "student1@test.com",
+          courseCode: "CS101",
           status: "CLAIMED"
         });
       });
@@ -489,6 +493,72 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
       await assertSucceeds(
         updateDoc(doc(facultyDb, `attendance_records/${validClaimDocId}`), {
           status: "APPROVED"
+        })
+      );
+    });
+
+    it("DENIES student attempting to alter claimed courseCode (mismatched course)", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_claims/${validClaimDocId}`), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "CLAIMED"
+        });
+      });
+
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      // Student attempts to submit for CS999 using a CS101 claim
+      await assertFails(
+        setDoc(doc(studentDb, `attendance_records/${validClaimDocId}`), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS999",
+          status: "REVIEW",
+          overallScore: 85,
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES unauthorized Faculty B from directly creating an attendance record for Faculty A's session", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, "users/faculty-b-uid"), {
+          role: "faculty",
+          email: "facultyb@test.com",
+          name: "Prof. Other"
+        });
+      });
+
+      const facultyBCtx = testEnv.authenticatedContext("faculty-b-uid", {
+        email: "facultyb@test.com"
+      });
+      const facultyBDb = facultyBCtx.firestore();
+
+      // Faculty B tries to forge an approved attendance record for Faculty A's session
+      await assertFails(
+        setDoc(doc(facultyBDb, `attendance_records/${sessionId}_student-uid-1`), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "APPROVED",
+          matchResult: "MANUAL_REQUEST_APPROVED",
+          overallScore: 100,
+          timestamp: Date.now()
         })
       );
     });
@@ -638,6 +708,218 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           status: "APPROVED"
         })
       );
+    });
+
+    it("ALLOWS authorized faculty to atomically batch-approve manual request and create attendance record", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+      });
+
+      const facultyCtx = testEnv.authenticatedContext("faculty-uid", {
+        email: "faculty@test.com"
+      });
+      const facultyDb = facultyCtx.firestore();
+
+      const batch = writeBatch(facultyDb);
+      batch.update(doc(facultyDb, `manual_attendance_requests/${manualDocId}`), {
+        status: "APPROVED"
+      });
+      batch.set(doc(facultyDb, `attendance_records/${manualDocId}`), {
+        sessionId: sessionId,
+        courseCode: "CS101",
+        studentUid: "student-uid-1",
+        studentEmail: "student1@test.com",
+        studentName: "Alice",
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+
+      await assertSucceeds(batch.commit());
+
+      // Verify both documents exist with APPROVED status
+      const manualSnap = await getDoc(doc(facultyDb, `manual_attendance_requests/${manualDocId}`));
+      assert.strictEqual(manualSnap.data().status, "APPROVED");
+
+      const recordSnap = await getDoc(doc(facultyDb, `attendance_records/${manualDocId}`));
+      assert.strictEqual(recordSnap.data().status, "APPROVED");
+      assert.strictEqual(recordSnap.data().matchResult, "MANUAL_REQUEST_APPROVED");
+    });
+
+    it("DENIES unauthorized Faculty B from atomically batch-approving Faculty A's manual request", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+        await setDoc(doc(adminDb, "users/faculty-b-uid"), {
+          role: "faculty",
+          email: "faculty_b@test.com",
+          name: "Prof. Other"
+        });
+      });
+
+      const facultyBCtx = testEnv.authenticatedContext("faculty-b-uid", {
+        email: "faculty_b@test.com"
+      });
+      const facultyBDb = facultyBCtx.firestore();
+
+      const batch = writeBatch(facultyBDb);
+      batch.update(doc(facultyBDb, `manual_attendance_requests/${manualDocId}`), {
+        status: "APPROVED"
+      });
+      batch.set(doc(facultyBDb, `attendance_records/${manualDocId}`), {
+        sessionId: sessionId,
+        courseCode: "CS101",
+        studentUid: "student-uid-1",
+        studentEmail: "student1@test.com",
+        studentName: "Alice",
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+
+      await assertFails(batch.commit());
+    });
+
+    it("DENIES student from batch-approving their manual request and attendance record", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+      });
+
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      const batch = writeBatch(studentDb);
+      batch.update(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+        status: "APPROVED"
+      });
+      batch.set(doc(studentDb, `attendance_records/${manualDocId}`), {
+        sessionId: sessionId,
+        courseCode: "CS101",
+        studentUid: "student-uid-1",
+        studentEmail: "student1@test.com",
+        studentName: "Alice",
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+
+      await assertFails(batch.commit());
+    });
+
+    it("handles repeated batch approval safely and idempotently without duplicate records", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+      });
+
+      const facultyCtx = testEnv.authenticatedContext("faculty-uid", {
+        email: "faculty@test.com"
+      });
+      const facultyDb = facultyCtx.firestore();
+
+      // First batch approval
+      const batch1 = writeBatch(facultyDb);
+      batch1.update(doc(facultyDb, `manual_attendance_requests/${manualDocId}`), {
+        status: "APPROVED"
+      });
+      batch1.set(doc(facultyDb, `attendance_records/${manualDocId}`), {
+        sessionId: sessionId,
+        courseCode: "CS101",
+        studentUid: "student-uid-1",
+        studentEmail: "student1@test.com",
+        studentName: "Alice",
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+      await assertSucceeds(batch1.commit());
+
+      // Second batch approval (repeated click / network retry)
+      const batch2 = writeBatch(facultyDb);
+      batch2.update(doc(facultyDb, `manual_attendance_requests/${manualDocId}`), {
+        status: "APPROVED"
+      });
+      batch2.set(doc(facultyDb, `attendance_records/${manualDocId}`), {
+        sessionId: sessionId,
+        courseCode: "CS101",
+        studentUid: "student-uid-1",
+        studentEmail: "student1@test.com",
+        studentName: "Alice",
+        status: "APPROVED",
+        matchResult: "MANUAL_REQUEST_APPROVED",
+        overallScore: 100,
+        timestamp: Date.now(),
+        rejectionReason: null
+      });
+      await assertSucceeds(batch2.commit());
+
+      // Verify still exactly one record with deterministic ID
+      const recordSnap = await getDoc(doc(facultyDb, `attendance_records/${manualDocId}`));
+      assert.strictEqual(recordSnap.data().status, "APPROVED");
     });
   });
 });

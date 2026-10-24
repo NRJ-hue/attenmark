@@ -19,7 +19,8 @@ import {
   collection,
   query,
   where,
-  onSnapshot
+  onSnapshot,
+  writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import {
   getFunctions,
@@ -75,5 +76,6 @@ export {
   query,
   where,
   onSnapshot,
+  writeBatch,
   httpsCallable
 };
