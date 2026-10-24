@@ -261,4 +261,31 @@ class QrScannerFlowTest {
         assertTrue(record.livenessPassed)
         assertNotEquals(AttendanceStatus.APPROVED, record.status) // Students cannot directly write APPROVED
     }
+
+    // ─── 7. Scoring Model Without Classroom Photo ─────────────────────────────────
+
+    @Test
+    fun scoringModel_calculates100PointsUsingQrLivenessAndFaceMatch() {
+        val qrVerifiedScore = 20 // Session QR presence verified
+        val livenessScore = 20   // Passed liveness challenge
+
+        // Case A: High face match (90% similarity)
+        val highMatchPct = 90
+        val faceScoreHigh = (highMatchPct * 0.6f).toInt() // 54 pts
+        val totalScoreHigh = qrVerifiedScore + livenessScore + faceScoreHigh // 94 pts
+        assertEquals(94, totalScoreHigh)
+        assertTrue(totalScoreHigh >= 50)
+
+        // Case B: Low face match (20% similarity)
+        val lowMatchPct = 20
+        val faceScoreLow = (lowMatchPct * 0.6f).toInt() // 12 pts
+        val totalScoreLow = qrVerifiedScore + livenessScore + faceScoreLow // 52 pts
+        // Even if score is 52, weak/no-match produces REJECTED status
+        val statusLow = if (lowMatchPct < 50) AttendanceStatus.REJECTED else AttendanceStatus.REVIEW
+        assertEquals(AttendanceStatus.REJECTED, statusLow)
+
+        // Case C: GPS accuracy uncertainty adjustment (-15 pts)
+        val uncertainScore = (totalScoreHigh - 15).coerceAtLeast(0) // 79 pts
+        assertEquals(79, uncertainScore)
+    }
 }

@@ -366,21 +366,66 @@ async function validateQrTokenCore(db, authContext, data) {
         sessionId,
         courseCode,
         attempt: 1,
-        retryRemaining: config.MAX_ATTEMPTS - 1
+        retryRemaining: config.MAX_ATTEMPTS - 1,
+        claimStatus: "CLAIMED"
       };
     } else {
-      // Existing claim: Evaluate single permitted retry
       const claimData = claimDoc.data();
 
       if (claimData.status === "SUBMITTED" || claimData.status === "COMPLETED") {
         throw new ServiceError("already-exists", "Attendance has already been recorded for this session.");
       }
 
+      if (claimData.status === "REJECTED_GPS") {
+        throw new ServiceError("permission-denied", "Attendance rejected due to GPS location outside classroom. Retries are not permitted for location violations.");
+      }
+
+      // If previous attempt reached an eligible failure state, consume the single permitted retry
+      if (claimData.status === "VERIFICATION_FAILED") {
+        if (claimData.attemptCount >= claimData.maxAttempts) {
+          throw new ServiceError("resource-exhausted", `Maximum verification attempts (${claimData.maxAttempts}) reached for this session.`);
+        }
+
+        const newAttemptCount = claimData.attemptCount + 1;
+        transaction.update(claimRef, {
+          lastTokenId: tokenId,
+          attemptCount: newAttemptCount,
+          status: "RETRYING",
+          updatedAt: now
+        });
+
+        return {
+          valid: true,
+          sessionId,
+          courseCode,
+          attempt: newAttemptCount,
+          retryRemaining: claimData.maxAttempts - newAttemptCount,
+          claimStatus: "RETRYING"
+        };
+      }
+
+      // If the claim is currently active and has NOT failed verification yet (e.g. duplicate camera frames, token rotated before capture)
+      if (claimData.status === "CLAIMED" || claimData.status === "RETRYING") {
+        if (claimData.attemptCount > claimData.maxAttempts) {
+          throw new ServiceError("resource-exhausted", `Maximum verification attempts (${claimData.maxAttempts}) reached for this session.`);
+        }
+
+        // Return existing active claim state without consuming another attempt
+        return {
+          valid: true,
+          sessionId,
+          courseCode,
+          attempt: claimData.attemptCount,
+          retryRemaining: Math.max(0, claimData.maxAttempts - claimData.attemptCount),
+          claimStatus: claimData.status
+        };
+      }
+
       if (claimData.attemptCount >= claimData.maxAttempts) {
         throw new ServiceError("resource-exhausted", `Maximum verification attempts (${claimData.maxAttempts}) reached for this session.`);
       }
 
-      // Increment attempt count for the single permitted retry
+      // Fallback for existing legacy claims
       const newAttemptCount = claimData.attemptCount + 1;
       transaction.update(claimRef, {
         lastTokenId: tokenId,
@@ -394,7 +439,8 @@ async function validateQrTokenCore(db, authContext, data) {
         sessionId,
         courseCode,
         attempt: newAttemptCount,
-        retryRemaining: claimData.maxAttempts - newAttemptCount
+        retryRemaining: claimData.maxAttempts - newAttemptCount,
+        claimStatus: "RETRYING"
       };
     }
   });
@@ -402,10 +448,71 @@ async function validateQrTokenCore(db, authContext, data) {
   return result;
 }
 
+/**
+ * Server-side core implementation of recordVerificationFailure.
+ * Records an eligible capture/verification problem (or GPS location violation) on the active claim.
+ *
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {{ uid: string, email: string } | null} authContext
+ * @param {{ sessionId: string, courseCode: string, failureReason: string }} data
+ */
+async function recordVerificationFailureCore(db, authContext, data) {
+  if (!authContext || !authContext.uid) {
+    throw new ServiceError("unauthenticated", "User must be authenticated.");
+  }
+
+  if (!data || !data.sessionId || !data.courseCode || !data.failureReason) {
+    throw new ServiceError("invalid-argument", "Missing required fields: sessionId, courseCode, and failureReason.");
+  }
+
+  const { sessionId, courseCode, failureReason } = data;
+  const studentUid = authContext.uid;
+  const claimId = `${sessionId}_${studentUid}`;
+
+  const now = Date.now();
+
+  return await db.runTransaction(async (transaction) => {
+    const claimRef = db.collection("attendance_claims").doc(claimId);
+    const claimDoc = await transaction.get(claimRef);
+
+    if (!claimDoc.exists) {
+      throw new ServiceError("not-found", "No active attendance claim found for this session.");
+    }
+
+    const claimData = claimDoc.data();
+    if (claimData.status === "SUBMITTED" || claimData.status === "COMPLETED") {
+      throw new ServiceError("already-exists", "Attendance has already been submitted for this session.");
+    }
+
+    const isGpsViolation = failureReason.toUpperCase().includes("GPS") || failureReason.toUpperCase().includes("LOCATION");
+
+    const newStatus = isGpsViolation ? "REJECTED_GPS" : "VERIFICATION_FAILED";
+    const retryEligible = !isGpsViolation && (claimData.attemptCount < claimData.maxAttempts);
+
+    transaction.update(claimRef, {
+      status: newStatus,
+      failureReason,
+      failedAt: now,
+      retryEligible,
+      updatedAt: now
+    });
+
+    return {
+      success: true,
+      claimId,
+      status: newStatus,
+      attemptCount: claimData.attemptCount,
+      retryEligible,
+      retryRemaining: retryEligible ? (claimData.maxAttempts - claimData.attemptCount) : 0
+    };
+  });
+}
+
 module.exports = {
   ServiceError,
   startAttendanceSessionCore,
   stopAttendanceSessionCore,
   generateQrTokenCore,
-  validateQrTokenCore
+  validateQrTokenCore,
+  recordVerificationFailureCore
 };

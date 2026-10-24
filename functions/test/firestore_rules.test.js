@@ -328,11 +328,93 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
       );
     });
 
-    it("ALLOWS faculty to read any attendance record and approve it", async function () {
+    it("DENIES student attempting to create record with non-matching document ID", async function () {
+      // Backend validates QR and creates claim doc
       await testEnv.withSecurityRulesDisabled(async (context) => {
         const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_claims/${validClaimDocId}`), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "CLAIMED"
+        });
+      });
+
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      // Student tries to submit with a forged random document ID instead of ${sessionId}_${studentUid}
+      await assertFails(
+        setDoc(doc(studentDb, "attendance_records/random-duplicate-id-123"), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "REVIEW",
+          overallScore: 85,
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES unauthorized Faculty B from approving or rejecting Faculty A's record", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        // Setup session owned by Faculty A (faculty@test.com)
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
         await setDoc(doc(adminDb, `attendance_records/${validClaimDocId}`), {
           sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW"
+        });
+        // Setup Faculty B user profile
+        await setDoc(doc(adminDb, "users/faculty-b-uid"), {
+          role: "faculty",
+          email: "facultyb@test.com",
+          name: "Prof. Other"
+        });
+      });
+
+      const facultyBCtx = testEnv.authenticatedContext("faculty-b-uid", {
+        email: "facultyb@test.com"
+      });
+      const facultyBDb = facultyBCtx.firestore();
+
+      // Faculty B attempts to approve Faculty A's record -> Must be DENIED
+      await assertFails(
+        updateDoc(doc(facultyBDb, `attendance_records/${validClaimDocId}`), {
+          status: "APPROVED"
+        })
+      );
+
+      // Faculty B attempts to reject Faculty A's record -> Must be DENIED
+      await assertFails(
+        updateDoc(doc(facultyBDb, `attendance_records/${validClaimDocId}`), {
+          status: "REJECTED",
+          rejectionReason: "Denied by unauthorized faculty"
+        })
+      );
+    });
+
+    it("ALLOWS authorized faculty to read and approve attendance record for their session", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `attendance_records/${validClaimDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
           studentUid: "student-uid-1",
           studentEmail: "student1@test.com",
           status: "REVIEW"
@@ -349,7 +431,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
         getDoc(doc(facultyDb, `attendance_records/${validClaimDocId}`))
       );
 
-      // Faculty can approve (update status)
+      // Authorized faculty can approve (update status)
       await assertSucceeds(
         updateDoc(doc(facultyDb, `attendance_records/${validClaimDocId}`), {
           status: "APPROVED"

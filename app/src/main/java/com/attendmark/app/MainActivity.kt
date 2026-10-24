@@ -11,7 +11,9 @@ import com.attendmark.app.ui.theme.AttendMarkTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        FirebaseEmulatorConfig.setup()
+        if (BuildConfig.DEBUG) {
+            FirebaseEmulatorConfig.setup()
+        }
         enableEdgeToEdge()
         setContent {
             AttendMarkTheme {

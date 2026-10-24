@@ -6,7 +6,8 @@ const {
   startAttendanceSessionCore,
   stopAttendanceSessionCore,
   generateQrTokenCore,
-  validateQrTokenCore
+  validateQrTokenCore,
+  recordVerificationFailureCore
 } = require("../qr_service");
 
 // Configure admin to point to the local Firestore emulator
@@ -437,10 +438,10 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       assert.ok(claim2Doc.exists, "Student 2 claim must exist");
     });
 
-    it("supports single permitted retry for capture failure and enforces maximum retry limit", async function () {
+    it("supports controlled retry lifecycle: re-scans before failure do not consume retries, failure allows one retry, and limit is enforced", async function () {
       const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
 
-      // Attempt 1: First scan
+      // Step 1: Initial valid scan creates claim
       const firstScan = await validateQrTokenCore(db, studentAuth, {
         tokenId: validTokenId,
         courseCode: COURSE_CODE,
@@ -450,17 +451,46 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       assert.strictEqual(firstScan.attempt, 1);
       assert.strictEqual(firstScan.retryRemaining, 1);
 
-      // Attempt 2: Single permitted retry (e.g. face capture retry)
-      const secondScan = await validateQrTokenCore(db, studentAuth, {
+      // Step 2: Duplicate scan / frame detection BEFORE an eligible failure occurs
+      // MUST NOT consume retry!
+      const duplicateScan = await validateQrTokenCore(db, studentAuth, {
         tokenId: validTokenId,
         courseCode: COURSE_CODE,
         sessionId: activeSessionId
       });
-      assert.strictEqual(secondScan.valid, true);
-      assert.strictEqual(secondScan.attempt, 2);
-      assert.strictEqual(secondScan.retryRemaining, 0);
+      assert.strictEqual(duplicateScan.valid, true);
+      assert.strictEqual(duplicateScan.attempt, 1, "Attempt must not increment before failure");
+      assert.strictEqual(duplicateScan.retryRemaining, 1);
 
-      // Attempt 3: Exceeds max retries -> Rejected with resource-exhausted
+      // Step 3: Record an eligible capture/biometric verification failure
+      const failureResult = await recordVerificationFailureCore(db, studentAuth, {
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        failureReason: "FACE_MISMATCH"
+      });
+      assert.strictEqual(failureResult.status, "VERIFICATION_FAILED");
+      assert.strictEqual(failureResult.retryEligible, true);
+
+      // Step 4: Re-scanning now grants the single permitted retry
+      const retryScan = await validateQrTokenCore(db, studentAuth, {
+        tokenId: validTokenId,
+        courseCode: COURSE_CODE,
+        sessionId: activeSessionId
+      });
+      assert.strictEqual(retryScan.valid, true);
+      assert.strictEqual(retryScan.attempt, 2);
+      assert.strictEqual(retryScan.retryRemaining, 0);
+
+      // Step 5: Second verification attempt fails
+      const secondFailure = await recordVerificationFailureCore(db, studentAuth, {
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        failureReason: "LIVENESS_FAILED"
+      });
+      assert.strictEqual(secondFailure.status, "VERIFICATION_FAILED");
+      assert.strictEqual(secondFailure.retryEligible, false);
+
+      // Step 6: Attempt 3 exceeds max retries -> Rejected with resource-exhausted
       await assert.rejects(
         validateQrTokenCore(db, studentAuth, {
           tokenId: validTokenId,
@@ -468,6 +498,36 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
           sessionId: activeSessionId
         }),
         (err) => err.code === "resource-exhausted"
+      );
+    });
+
+    it("DENIES retries for GPS location violations outside the classroom", async function () {
+      const studentAuth = { uid: STUDENT_2_UID, email: STUDENT_2_EMAIL };
+
+      // Initial scan
+      await validateQrTokenCore(db, studentAuth, {
+        tokenId: validTokenId,
+        courseCode: COURSE_CODE,
+        sessionId: activeSessionId
+      });
+
+      // Record GPS violation
+      const gpsFailure = await recordVerificationFailureCore(db, studentAuth, {
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        failureReason: "GPS_OUTSIDE_GEOFENCE"
+      });
+      assert.strictEqual(gpsFailure.status, "REJECTED_GPS");
+      assert.strictEqual(gpsFailure.retryEligible, false);
+
+      // Attempting to re-scan after GPS violation is rejected
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: validTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
+        }),
+        (err) => err.code === "permission-denied"
       );
     });
 

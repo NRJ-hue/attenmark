@@ -1,19 +1,21 @@
 package com.attendmark.app.data
 
 import android.util.Log
+import com.attendmark.app.BuildConfig
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
 
 /**
  * Manages configuration and connection to the Firebase Emulator Suite for local development.
+ * Automatically disabled in release builds to prevent pointing to local development endpoints.
  */
 object FirebaseEmulatorConfig {
     /**
      * Flag to control connecting to the Firebase Emulator Suite during development.
-     * Defaults to true for local testing. Set to false to target live Firebase.
+     * Defaults to true in debug builds, false in release.
      */
-    var isEmulatorEnabled: Boolean = true
+    var isEmulatorEnabled: Boolean = BuildConfig.DEBUG
 
     /**
      * Default host: "10.0.2.2" maps to localhost from the Android Studio emulator.

@@ -20,13 +20,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
@@ -46,12 +46,12 @@ import com.attendmark.app.ui.theme.*
 import kotlinx.coroutines.*
 import java.util.concurrent.Executors
 
-// ─── Flow Steps ───────────────────────────────────────────────────────────────
+// ─── Flow Steps (QR Verified -> Liveness -> Selfie -> Proximity/Submit) ───────
 enum class AttendanceFlowStep {
     LIVENESS_CHALLENGE,
-    BEREAL_BACK_CAPTURE,
-    BEREAL_FRONT_CAPTURE,
+    SELFIE_CAPTURE,
     SUBMITTING,
+    FAILED_ATTEMPT
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -67,6 +67,7 @@ fun AttendanceFlowScreen(
     val prefs = remember { UserPreferences(context) }
     val faceService = remember { FaceRecognitionService(context) }
     val livenessService = remember { LivenessDetectionService() }
+    val qrValidationService = remember { QrValidationService() }
 
     val userEmail by prefs.userEmail.collectAsState(initial = "")
     val userName by prefs.userName.collectAsState(initial = "")
@@ -76,8 +77,11 @@ fun AttendanceFlowScreen(
     var currentStep by remember { mutableStateOf(AttendanceFlowStep.LIVENESS_CHALLENGE) }
     var challenge by remember { mutableStateOf(livenessService.randomChallenge()) }
     var selfieCapture by remember { mutableStateOf<Bitmap?>(null) }
-    var classroomCapture by remember { mutableStateOf<Bitmap?>(null) }
     var statusMessage by remember { mutableStateOf("") }
+
+    var failureTitle by remember { mutableStateOf("Verification Problem") }
+    var failureDetails by remember { mutableStateOf("") }
+    var isRetryEligible by remember { mutableStateOf(false) }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -110,7 +114,7 @@ fun AttendanceFlowScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Mark Attendance", color = Color.White) },
+                title = { Text("Biometric Attendance", color = Color.White) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
@@ -148,7 +152,7 @@ fun AttendanceFlowScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "You cannot access biometric verification without first scanning a valid session QR code.",
+                        "A validated session QR code is required before proceeding to biometric verification.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.8f),
                         textAlign = TextAlign.Center
@@ -159,11 +163,12 @@ fun AttendanceFlowScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text("Return to Dashboard", color = Color.White)
+                        Text("Return to Scanner", color = Color.White)
                     }
                 }
             } else if (hasCameraPermission) {
                 when (currentStep) {
+                    // Step 1: Front camera liveness challenge
                     AttendanceFlowStep.LIVENESS_CHALLENGE -> {
                         LivenessChallengeStep(
                             challenge = challenge,
@@ -171,32 +176,21 @@ fun AttendanceFlowScreen(
                             cameraExecutor = cameraExecutor,
                             livenessService = livenessService,
                             onChallengePassed = {
-                                currentStep = AttendanceFlowStep.BEREAL_BACK_CAPTURE
+                                currentStep = AttendanceFlowStep.SELFIE_CAPTURE
                             }
                         )
                     }
 
-                    AttendanceFlowStep.BEREAL_BACK_CAPTURE -> {
-                        ClassroomBackCaptureStep(
-                            imageCapture = imageCaptureRef,
-                            cameraExecutor = cameraExecutor,
-                            onCapture = { classroomBitmap ->
-                                classroomCapture = classroomBitmap
-                                currentStep = AttendanceFlowStep.BEREAL_FRONT_CAPTURE
-                            }
-                        )
-                    }
-                    
-                    AttendanceFlowStep.BEREAL_FRONT_CAPTURE -> {
-                        ClassroomFrontCaptureStep(
-                            classroomBitmap = classroomCapture,
+                    // Step 2: Front camera verification selfie
+                    AttendanceFlowStep.SELFIE_CAPTURE -> {
+                        SelfieCaptureStep(
                             imageCapture = imageCaptureRef,
                             cameraExecutor = cameraExecutor,
                             onCapture = { selfieBitmap ->
                                 selfieCapture = selfieBitmap
                                 currentStep = AttendanceFlowStep.SUBMITTING
-                                statusMessage = "Verifying identity..."
-                                
+                                statusMessage = "Verifying biometric features..."
+
                                 scope.launch {
                                     val enrolledEmbedding = withContext(Dispatchers.Default) {
                                         if (faceEmbeddingJson.isNotBlank())
@@ -205,14 +199,20 @@ fun AttendanceFlowScreen(
                                     }
 
                                     if (enrolledEmbedding == null) {
-                                        onResult("error")
+                                        failureTitle = "Enrollment Missing"
+                                        failureDetails = "Your face profile is not enrolled on this device. Please re-enroll in settings."
+                                        isRetryEligible = false
+                                        currentStep = AttendanceFlowStep.FAILED_ATTEMPT
                                         return@launch
                                     }
 
-                                    statusMessage = "Comparing face..."
+                                    statusMessage = "Matching face features..."
                                     val liveSelfie = selfieCapture
                                     if (liveSelfie == null) {
-                                        onResult("error")
+                                        failureTitle = "Capture Failed"
+                                        failureDetails = "Could not process selfie image."
+                                        isRetryEligible = true
+                                        currentStep = AttendanceFlowStep.FAILED_ATTEMPT
                                         return@launch
                                     }
 
@@ -238,14 +238,9 @@ fun AttendanceFlowScreen(
                                     val matchResult = faceService.getMatchResult(similarity)
                                     val matchPct = faceService.similarityToPercentage(similarity)
 
-                                    // Evaluate Classroom Back Camera Photo (Mathematical check for hand covering)
-                                    val isClassroomValid = classroomCapture?.let { 
-                                        com.attendmark.app.data.ImageValidationUtil.isImageValid(it) 
-                                    } ?: false
-
-                                    // GPS Classroom Proximity Verification
-                                    statusMessage = "Verifying GPS classroom proximity..."
-                                    val locationService = com.attendmark.app.data.LocationService(context)
+                                    // GPS Proximity Verification
+                                    statusMessage = "Verifying classroom GPS..."
+                                    val locationService = LocationService(context)
                                     val (loc, locErr) = locationService.getCurrentLocation()
                                     val firestoreRepo = FirestoreRepository()
                                     val activeSession = withContext(Dispatchers.IO) {
@@ -254,65 +249,123 @@ fun AttendanceFlowScreen(
                                     val facLat = (activeSession?.get("latitude") as? Number)?.toDouble() ?: 0.0
                                     val facLon = (activeSession?.get("longitude") as? Number)?.toDouble() ?: 0.0
 
-                                    var gpsValid = true
-                                    var gpsRejectionReason: String? = null
+                                    val gpsEval = LocationService.evaluateProximity(
+                                        location = loc,
+                                        locationError = locErr,
+                                        classroomLat = facLat,
+                                        classroomLon = facLon
+                                    )
 
-                                    if (facLat != 0.0 || facLon != 0.0) {
-                                        if (loc != null) {
-                                            val distance = com.attendmark.app.data.LocationService.calculateDistance(
-                                                loc.latitude, loc.longitude, facLat, facLon
-                                            )
-                                            if (distance > 50f) {
-                                                gpsValid = false
-                                                gpsRejectionReason = "GPS verification failed: You are ${distance.toInt()}m from classroom (max 50m allowed)."
+                                    // Calculate 100-point Overall Trust Score:
+                                    // 1. QR Session Presence: 20 points
+                                    // 2. Liveness Challenge Passed: 20 points
+                                    // 3. Face Match: up to 60 points
+                                    var trustScore = 20 + 20 + (matchPct * 0.6f).toInt()
+
+                                    // Adjust for GPS accuracy uncertainty
+                                    if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY) {
+                                        trustScore = (trustScore - 15).coerceAtLeast(0)
+                                    }
+
+                                    // Check for hard rejection conditions
+                                    val isFaceMatchFailed = (matchResult == FaceRecognitionService.MatchResult.NO_MATCH || 
+                                                             matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH)
+                                    val isGpsOutside = (gpsEval.status == GpsVerificationStatus.OUTSIDE_GEOFENCE)
+
+                                    val finalStatus: AttendanceStatus
+                                    val finalRejectionReason: String?
+
+                                    when {
+                                        isGpsOutside -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = gpsEval.errorMessage ?: "GPS location outside classroom geofence."
+                                            
+                                            // Record GPS violation on backend claim
+                                            withContext(Dispatchers.IO) {
+                                                qrValidationService.recordAttemptFailure(
+                                                    sessionId = sessionId,
+                                                    courseCode = courseCode,
+                                                    failureReason = "GPS_OUTSIDE_GEOFENCE"
+                                                )
                                             }
-                                        } else {
-                                            gpsValid = false
-                                            gpsRejectionReason = "GPS verification failed: ${locErr ?: "Could not determine GPS coordinates"}"
+
+                                            failureTitle = "Outside Classroom Geofence"
+                                            failureDetails = "Your GPS location is outside the permitted classroom area. Location violations cannot be retried."
+                                            isRetryEligible = false
+                                        }
+
+                                        isFaceMatchFailed -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = "Face verification failed: confidence score ($matchPct%) below threshold."
+
+                                            // Record capture failure on backend claim
+                                            val failResult = withContext(Dispatchers.IO) {
+                                                qrValidationService.recordAttemptFailure(
+                                                    sessionId = sessionId,
+                                                    courseCode = courseCode,
+                                                    failureReason = "FACE_MISMATCH"
+                                                )
+                                            }
+
+                                            val eligible = failResult.getOrNull()?.get("retryEligible") as? Boolean ?: false
+                                            failureTitle = "Face Recognition Failed"
+                                            failureDetails = if (eligible) {
+                                                "Confidence score was insufficient ($matchPct%). You have 1 retry remaining. Tap 'Retry' to scan the current QR code on the projector and try again."
+                                            } else {
+                                                "Confidence score insufficient ($matchPct%). Maximum verification attempts reached for this session. Please submit a manual request."
+                                            }
+                                            isRetryEligible = eligible
+                                        }
+
+                                        trustScore >= 50 -> {
+                                            finalStatus = AttendanceStatus.REVIEW
+                                            finalRejectionReason = if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
+                                                gpsEval.errorMessage else null
+                                        }
+
+                                        else -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = "Overall trust score insufficient ($trustScore/100)."
                                         }
                                     }
 
-                                    // Calculate 100-point Overall Trust Score
-                                    var trustScore = 0
-                                    // 1. Face Match (60 Points max)
-                                    trustScore += (matchPct * 0.6f).toInt()
-                                    // 2. Liveness Check (20 Points)
-                                    trustScore += 20 // Passed earlier in the flow
-                                    // 3. Photo Validation (20 Points)
-                                    if (isClassroomValid) {
-                                        trustScore += 20
-                                    }
-                                    if (!gpsValid) {
-                                        trustScore = (trustScore * 0.5f).toInt()
+                                    // If this was an eligible failure or non-retryable rejection, show failure UI
+                                    if (isFaceMatchFailed || isGpsOutside) {
+                                        currentStep = AttendanceFlowStep.FAILED_ATTEMPT
+                                        // Still persist the rejection record for faculty audit trail
+                                        val currentUid = if (userUid.isNotBlank()) userUid
+                                            else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
+                                        val docId = "${sessionId}_${currentUid}"
+                                        val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
+
+                                        val record = AttendanceRecord(
+                                            id = docId,
+                                            sessionId = sessionId,
+                                            studentUid = currentUid,
+                                            studentName = userName,
+                                            studentEmail = userEmail,
+                                            courseCode = courseCode,
+                                            faceMatchScore = similarity,
+                                            matchPercentage = matchPct,
+                                            matchResult = matchResult.name,
+                                            livenessChallenge = challenge.name,
+                                            livenessPassed = true,
+                                            status = finalStatus,
+                                            overallScore = trustScore,
+                                            selfieBase64 = selfieBase64,
+                                            rejectionReason = finalRejectionReason
+                                        )
+                                        withContext(Dispatchers.IO) {
+                                            firestoreRepo.submitRecord(record, {}, {})
+                                        }
+                                        return@launch
                                     }
 
-                                    // Status Overrides based on total score and verification checks
-                                    // Students cannot submit directly as APPROVED per Firestore rules;
-                                    // High trust scores submit as REVIEW awaiting confirmation
-                                    val finalStatus = when {
-                                        !gpsValid -> AttendanceStatus.REJECTED
-                                        matchResult == FaceRecognitionService.MatchResult.NO_MATCH || matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH -> AttendanceStatus.REJECTED
-                                        trustScore >= 50 -> AttendanceStatus.REVIEW
-                                        else -> AttendanceStatus.REJECTED
-                                    }
-
-                                    val finalRejectionReason = when {
-                                        !gpsValid -> gpsRejectionReason
-                                        matchResult == FaceRecognitionService.MatchResult.NO_MATCH || matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH ->
-                                            "Face match confidence ($matchPct%) below threshold."
-                                        trustScore < 50 ->
-                                            "Overall verification trust score insufficient ($trustScore/100)."
-                                        else -> null
-                                    }
-
-                                    // Compress photos to Base64 for Firestore
-                                    val classroomBase64 = classroomCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
-                                    val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
-
+                                    // Persist valid record to Firestore
                                     val currentUid = if (userUid.isNotBlank()) userUid
                                         else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
-
                                     val docId = "${sessionId}_${currentUid}"
+                                    val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
 
                                     val record = AttendanceRecord(
                                         id = docId,
@@ -329,11 +382,10 @@ fun AttendanceFlowScreen(
                                         status = finalStatus,
                                         overallScore = trustScore,
                                         selfieBase64 = selfieBase64,
-                                        classroomPhotoBase64 = classroomBase64,
                                         rejectionReason = finalRejectionReason
                                     )
-                                    
-                                    statusMessage = "Submitting verified attendance record..."
+
+                                    statusMessage = "Persisting attendance record..."
                                     firestoreRepo.submitRecord(
                                         record = record,
                                         onSuccess = { onResult(record.id) },
@@ -349,6 +401,16 @@ fun AttendanceFlowScreen(
 
                     AttendanceFlowStep.SUBMITTING -> {
                         SubmittingStep(message = statusMessage)
+                    }
+
+                    AttendanceFlowStep.FAILED_ATTEMPT -> {
+                        FailedAttemptStep(
+                            title = failureTitle,
+                            details = failureDetails,
+                            isRetryEligible = isRetryEligible,
+                            onRetry = onBack,
+                            onDashboard = onBack
+                        )
                     }
                 }
             } else {
@@ -377,19 +439,66 @@ fun LivenessChallengeStep(
     livenessService: LivenessDetectionService,
     onChallengePassed: () -> Unit
 ) {
+    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-
-    var challengeStatus by remember { mutableStateOf("Waiting...") }
-    var isAnalyzing by remember { mutableStateOf(false) }
+    var isChecking by remember { mutableStateOf(false) }
+    var detectedText by remember { mutableStateOf("Position your face in the circle") }
     var challengePassed by remember { mutableStateOf(false) }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.1f,
-        animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
-        label = "scale"
-    )
+    val challengeInstruction = when (challenge) {
+        LivenessDetectionService.LivenessChallenge.BLINK -> "👀 Blink both eyes"
+        LivenessDetectionService.LivenessChallenge.TURN_LEFT -> "👈 Turn your head left"
+        LivenessDetectionService.LivenessChallenge.TURN_RIGHT -> "👉 Turn your head right"
+        LivenessDetectionService.LivenessChallenge.SMILE -> "😊 Smile at the camera"
+    }
+
+    LaunchedEffect(Unit) {
+        while (!challengePassed) {
+            delay(600)
+            if (!isChecking && !challengePassed) {
+                isChecking = true
+                imageCapture.takePicture(
+                    cameraExecutor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(image: ImageProxy) {
+                            val bitmap = imageProxyToBitmap(image)
+                            image.close()
+                            if (bitmap != null) {
+                                scope.launch {
+                                    try {
+                                        val result = withContext(Dispatchers.Default) {
+                                            livenessService.analyzeFrame(bitmap, challenge, isFrontCamera = true)
+                                        }
+                                        if (result.challengePassed) {
+                                            challengePassed = true
+                                            detectedText = "Challenge Passed! ✅"
+                                            delay(800)
+                                            onChallengePassed()
+                                        } else {
+                                            detectedText = when {
+                                                result.noFace -> "No face detected"
+                                                result.multipleFaces -> "Multiple faces — only one person"
+                                                else -> "Perform: $challengeInstruction"
+                                            }
+                                        }
+                                    } finally {
+                                        isChecking = false
+                                    }
+                                }
+                            } else {
+                                isChecking = false
+                            }
+                        }
+
+                        override fun onError(exception: ImageCaptureException) {
+                            isChecking = false
+                        }
+                    }
+                )
+            }
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -420,223 +529,83 @@ fun LivenessChallengeStep(
 
         Canvas(modifier = Modifier.fillMaxSize()) {
             val cx = size.width / 2
-            val cy = size.height * 0.42f
-            val rx = size.width * 0.36f
-            val ry = size.height * 0.27f
-            drawRect(color = Color.Black.copy(alpha = 0.5f), size = size)
-            drawOval(Color.Transparent, Offset(cx - rx, cy - ry), Size(rx * 2, ry * 2), blendMode = BlendMode.Clear)
-            val borderColor = if (challengePassed) Color(0xFF4CAF50) else PrimaryBlueLight
-            drawOval(borderColor, Offset(cx - rx, cy - ry), Size(rx * 2, ry * 2), style = Stroke(5.dp.toPx()))
+            val cy = size.height * 0.40f
+            val r = size.width * 0.35f
+
+            drawRect(color = Color.Black.copy(alpha = 0.55f), size = size)
+
+            drawCircle(
+                color = Color.Transparent,
+                radius = r,
+                center = Offset(cx, cy),
+                blendMode = BlendMode.Clear
+            )
+
+            drawCircle(
+                color = if (challengePassed) AccentGreen else PrimaryBlueLight,
+                radius = r,
+                center = Offset(cx, cy),
+                style = Stroke(width = 4.dp.toPx())
+            )
         }
 
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
-                .padding(top = 16.dp, start = 16.dp, end = 16.dp),
+                .padding(top = 20.dp, start = 16.dp, end = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = PrimaryBlue.copy(alpha = 0.92f)),
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.75f)),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("Step 1: Liveness Check", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.7f))
+                    Text(
+                        text = "Step 1: Liveness Challenge",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PrimaryBlueLight
+                    )
                     Spacer(Modifier.height(4.dp))
-                    Text(challenge.emoji, fontSize = 36.sp, modifier = Modifier.scale(scale))
-                    Text(challenge.instruction, style = MaterialTheme.typography.titleMedium, color = Color.White, textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(4.dp))
-                    Text(challengeStatus, style = MaterialTheme.typography.bodyMedium, color = if (challengePassed) Color(0xFF81C784) else Color.White.copy(alpha = 0.7f))
+                    Text(
+                        text = challengeInstruction,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
                 }
             }
-        }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp, start = 24.dp, end = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            if (!challengePassed) {
-                Button(
-                    onClick = {
-                        if (!isAnalyzing) {
-                            isAnalyzing = true
-                            challengeStatus = "Analyzing..."
-                            imageCapture.takePicture(
-                                cameraExecutor,
-                                object : ImageCapture.OnImageCapturedCallback() {
-                                    override fun onCaptureSuccess(image: ImageProxy) {
-                                        val bitmap = imageProxyToBitmap(image)
-                                        image.close()
-                                        if (bitmap != null) {
-                                            scope.launch {
-                                                val result = withContext(Dispatchers.Default) {
-                                                    livenessService.analyzeFrame(bitmap, challenge, isFrontCamera = true)
-                                                }
-                                                isAnalyzing = false
-                                                when {
-                                                    result.noFace -> challengeStatus = "No face detected."
-                                                    result.multipleFaces -> challengeStatus = "Multiple faces detected."
-                                                    result.challengePassed -> {
-                                                        challengeStatus = "✅ Passed! Proceeding..."
-                                                        challengePassed = true
-                                                        delay(1000)
-                                                        onChallengePassed()
-                                                    }
-                                                    else -> challengeStatus = "Action not detected. Try again!"
-                                                }
-                                            }
-                                        } else {
-                                            isAnalyzing = false
-                                            challengeStatus = "Capture failed. Try again."
-                                        }
-                                    }
-                                    override fun onError(exception: ImageCaptureException) {
-                                        isAnalyzing = false
-                                        challengeStatus = "Camera error. Try again."
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
-                    enabled = !isAnalyzing
-                ) {
-                    if (isAnalyzing) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
-                    else Text("Check Now", color = Color.White, style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-    }
-}
+            Spacer(Modifier.height(8.dp))
 
-// ─── Step 2: Classroom Back Capture ────────────────────────────────────────────
-@Composable
-fun ClassroomBackCaptureStep(
-    imageCapture: ImageCapture,
-    cameraExecutor: java.util.concurrent.ExecutorService,
-    onCapture: (Bitmap) -> Unit
-) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var isCapturing by remember { mutableStateOf(false) }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-            factory = { ctx ->
-                val previewView = PreviewView(ctx)
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            imageCapture
-                        )
-                    } catch (e: Exception) {
-                        Log.e("BackCamera", "Bind failed: ${e.message}")
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
-                previewView
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-
-        Column(
-            modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(top = 16.dp, start = 16.dp, end = 16.dp),
-        ) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.7f)),
-                shape = RoundedCornerShape(12.dp)
+                colors = CardDefaults.cardColors(
+                    containerColor = if (challengePassed) AccentGreen.copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.5f)
+                ),
+                shape = RoundedCornerShape(8.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Step 2: 📸 BeReal Capture", style = MaterialTheme.typography.labelMedium, color = PrimaryBlueLight)
-                    Text("Point at your classroom and click capture", style = MaterialTheme.typography.bodyMedium, color = Color.White)
-                }
-            }
-        }
-
-        Box(
-            modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(bottom = 48.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            IconButton(
-                onClick = {
-                    if (!isCapturing) {
-                        isCapturing = true
-                        imageCapture.takePicture(
-                            cameraExecutor,
-                            object : ImageCapture.OnImageCapturedCallback() {
-                                override fun onCaptureSuccess(image: ImageProxy) {
-                                    val buffer = image.planes[0].buffer
-                                    val bytes = ByteArray(buffer.remaining())
-                                    buffer.get(bytes)
-                                    image.close()
-                                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                    bitmap?.let { onCapture(it) }
-                                }
-                                override fun onError(exception: ImageCaptureException) {
-                                    isCapturing = false
-                                }
-                            }
-                        )
-                    }
-                },
-                modifier = Modifier.size(80.dp).background(Color.White, CircleShape).border(4.dp, PrimaryBlue, CircleShape),
-                enabled = !isCapturing
-            ) {
-                if (isCapturing) {
-                    CircularProgressIndicator(color = PrimaryBlue, modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
-                } else {
-                    Icon(Icons.Default.PhotoCamera, contentDescription = "Capture", modifier = Modifier.size(36.dp), tint = PrimaryBlue)
-                }
+                Text(
+                    text = detectedText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
             }
         }
     }
 }
 
-// ─── Step 3: Classroom Front Capture (Auto) ───────────────────────────────────
+// ─── Step 2: Verification Selfie Capture ──────────────────────────────────────
 @Composable
-fun ClassroomFrontCaptureStep(
-    classroomBitmap: Bitmap?,
+fun SelfieCaptureStep(
     imageCapture: ImageCapture,
     cameraExecutor: java.util.concurrent.ExecutorService,
     onCapture: (Bitmap) -> Unit
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var isCapturing by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        delay(1200) // Wait 1.2s for camera to flip and auto-expose
-        if (!isCapturing) {
-            isCapturing = true
-            imageCapture.takePicture(
-                cameraExecutor,
-                object : ImageCapture.OnImageCapturedCallback() {
-                    override fun onCaptureSuccess(image: ImageProxy) {
-                        val bitmap = imageProxyToBitmap(image)
-                        image.close()
-                        bitmap?.let { onCapture(it) }
-                    }
-                    override fun onError(exception: ImageCaptureException) {
-                        isCapturing = false
-                    }
-                }
-            )
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -657,48 +626,103 @@ fun ClassroomFrontCaptureStep(
                             imageCapture
                         )
                     } catch (e: Exception) {
-                        Log.e("FrontCamera", "Bind failed: ${e.message}")
+                        Log.e("SelfieCamera", "Bind failed: ${e.message}")
                     }
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView
             },
             modifier = Modifier.fillMaxSize()
         )
-        
-        classroomBitmap?.let { bgImg ->
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 16.dp, end = 16.dp)
-                    .size(100.dp, 130.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .border(3.dp, Color.White, RoundedCornerShape(12.dp))
-            ) {
-                Image(
-                    bitmap = bgImg.asImageBitmap(),
-                    contentDescription = "Classroom",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            }
+
+        // Oval face guide
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2
+            val cy = size.height * 0.40f
+            val rx = size.width * 0.35f
+            val ry = size.height * 0.28f
+
+            drawRect(color = Color.Black.copy(alpha = 0.55f), size = size)
+
+            drawOval(
+                color = Color.Transparent,
+                topLeft = Offset(cx - rx, cy - ry),
+                size = Size(rx * 2, ry * 2),
+                blendMode = BlendMode.Clear
+            )
+
+            drawOval(
+                color = PrimaryBlueLight,
+                topLeft = Offset(cx - rx, cy - ry),
+                size = Size(rx * 2, ry * 2),
+                style = Stroke(width = 3.dp.toPx())
+            )
         }
 
         Column(
-            modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).padding(top = 16.dp, start = 16.dp, end = 130.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .padding(top = 20.dp, start = 16.dp, end = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.7f)),
-                shape = RoundedCornerShape(12.dp)
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.75f)),
+                shape = RoundedCornerShape(16.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Capturing face in 1 sec...", style = MaterialTheme.typography.labelMedium, color = PrimaryBlueLight)
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Step 2: Verification Photo", style = MaterialTheme.typography.labelMedium, color = PrimaryBlueLight)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Align your face and tap capture", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            IconButton(
+                onClick = {
+                    if (!isCapturing) {
+                        isCapturing = true
+                        imageCapture.takePicture(
+                            cameraExecutor,
+                            object : ImageCapture.OnImageCapturedCallback() {
+                                override fun onCaptureSuccess(image: ImageProxy) {
+                                    val bitmap = imageProxyToBitmap(image)
+                                    image.close()
+                                    bitmap?.let { onCapture(it) }
+                                }
+                                override fun onError(exception: ImageCaptureException) {
+                                    isCapturing = false
+                                }
+                            }
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .size(80.dp)
+                    .background(Color.White, CircleShape)
+                    .border(4.dp, PrimaryBlue, CircleShape),
+                enabled = !isCapturing
+            ) {
+                if (isCapturing) {
+                    CircularProgressIndicator(color = PrimaryBlue, modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
+                } else {
+                    Icon(Icons.Default.PhotoCamera, contentDescription = "Capture", modifier = Modifier.size(36.dp), tint = PrimaryBlue)
                 }
             }
         }
     }
 }
 
-// ─── Submitting Step ───────────────────────────────────────────────────────────
+// ─── Step 3: Submitting Progress ──────────────────────────────────────────────
 @Composable
 fun SubmittingStep(message: String) {
     Column(
@@ -706,8 +730,79 @@ fun SubmittingStep(message: String) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        CircularProgressIndicator(color = PrimaryBlue, modifier = Modifier.size(64.dp))
-        Spacer(modifier = Modifier.height(24.dp))
-        Text(message, style = MaterialTheme.typography.titleMedium, color = Color.White)
+        CircularProgressIndicator(color = PrimaryBlueLight, modifier = Modifier.size(64.dp), strokeWidth = 5.dp)
+        Spacer(Modifier.height(24.dp))
+        Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+    }
+}
+
+// ─── Step 4: Failed Attempt / Retry Dialogue ──────────────────────────────────
+@Composable
+fun FailedAttemptStep(
+    title: String,
+    details: String,
+    isRetryEligible: Boolean,
+    onRetry: () -> Unit,
+    onDashboard: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            Icons.Default.Warning,
+            contentDescription = null,
+            tint = StatusRejected,
+            modifier = Modifier.size(72.dp)
+        )
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineMedium,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = details,
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.85f),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 16.dp)
+        )
+        Spacer(Modifier.height(32.dp))
+
+        if (isRetryEligible) {
+            Button(
+                onClick = onRetry,
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White)
+                Spacer(Modifier.width(8.dp))
+                Text("Retry Attendance Verification", color = Color.White)
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onDashboard,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                Text("Cancel", color = Color.White)
+            }
+        } else {
+            Button(
+                onClick = onDashboard,
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                Text("Return to Dashboard", color = Color.White)
+            }
+        }
     }
 }

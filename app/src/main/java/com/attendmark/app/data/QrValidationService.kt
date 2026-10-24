@@ -167,4 +167,28 @@ class QrValidationService(
             mapFunctionsException(e)
         }
     }
+
+    /**
+     * Record an eligible capture/verification problem (or GPS location violation) on the active claim.
+     */
+    suspend fun recordAttemptFailure(
+        sessionId: String,
+        courseCode: String,
+        failureReason: String
+    ): Result<Map<String, Any?>> {
+        return try {
+            val data = hashMapOf(
+                "sessionId" to sessionId.trim(),
+                "courseCode" to courseCode.trim(),
+                "failureReason" to failureReason.trim()
+            )
+            val callable = functions.getHttpsCallable("recordVerificationFailure")
+            val result = callable.call(data).await()
+            @Suppress("UNCHECKED_CAST")
+            val resMap = result.data as? Map<String, Any?> ?: emptyMap()
+            Result.success(resMap)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

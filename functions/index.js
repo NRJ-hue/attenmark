@@ -12,7 +12,8 @@ const {
   startAttendanceSessionCore,
   stopAttendanceSessionCore,
   generateQrTokenCore,
-  validateQrTokenCore
+  validateQrTokenCore,
+  recordVerificationFailureCore
 } = require("./qr_service");
 
 /**
@@ -92,6 +93,26 @@ exports.validateQrToken = functions.https.onCall(async (data, context) => {
       throw new functions.https.HttpsError(err.code, err.message);
     }
     console.error("Unexpected error in validateQrToken:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: recordVerificationFailure
+ * Callable by authenticated student to record an eligible capture failure or GPS violation on their claim.
+ */
+exports.recordVerificationFailure = functions.https.onCall(async (data, context) => {
+  try {
+    const authContext = context.auth
+      ? { uid: context.auth.uid, email: context.auth.token.email || "" }
+      : null;
+
+    return await recordVerificationFailureCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in recordVerificationFailure:", err);
     throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
   }
 });

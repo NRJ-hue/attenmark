@@ -93,27 +93,38 @@ service cloud.firestore {
     match /attendance_records/{recordId} {
       allow read: if isAuthenticated() && (request.auth.uid == resource.data.studentUid || isFaculty());
 
+      function isAuthorizedFacultyForRecord() {
+        return isFaculty() &&
+               (
+                 (exists(/databases/$(database)/documents/attendance_sessions/$(resource.data.sessionId)) &&
+                  get(/databases/$(database)/documents/attendance_sessions/$(resource.data.sessionId)).data.facultyEmail == request.auth.token.email) ||
+                 (exists(/databases/$(database)/documents/sessions/$(resource.data.courseCode)) &&
+                  get(/databases/$(database)/documents/sessions/$(resource.data.courseCode)).data.facultyEmail == request.auth.token.email)
+               );
+      }
+
       // Student submission constraints:
       // - Must be authenticated
       // - Must submit on their own behalf (studentUid matches caller uid)
       // - Cannot directly claim APPROVED status (must be REVIEW, PENDING, or REJECTED)
       // - Must specify a valid sessionId
-      // - Document ID must be "${sessionId}_${studentUid}" ensuring atomic duplicate prevention on create
+      // - Document ID must strictly equal "${sessionId}_${studentUid}" to enforce one record per student per session
       // - Must possess an authorized attendance claim issued by validateQrToken (or manual request exception)
       allow create: if (isAuthenticated() &&
                         request.auth.uid == request.resource.data.studentUid &&
+                        recordId == (request.resource.data.sessionId + "_" + request.auth.uid) &&
                         request.resource.data.studentEmail == request.auth.token.email &&
                         request.resource.data.status != 'APPROVED' &&
                         request.resource.data.sessionId != null &&
                         request.resource.data.sessionId != '' &&
-                        (exists(/databases/$(database)/documents/attendance_claims/$(request.resource.data.sessionId + "_" + request.auth.uid)) ||
+                        (exists(/databases/$(database)/documents/attendance_claims/$(recordId)) ||
                          request.resource.data.matchResult == 'MANUAL_REQUEST')) ||
-                       isFaculty();
+                       (isFaculty() && recordId == (request.resource.data.sessionId + "_" + request.resource.data.studentUid));
 
       // Update constraints:
       // Students cannot modify records once submitted.
-      // Only authorized faculty can approve or reject records under review.
-      allow update: if isFaculty() &&
+      // Only authorized faculty who owns the course/session can approve or reject records.
+      allow update: if isAuthorizedFacultyForRecord() &&
                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
 
       allow delete: if false;
