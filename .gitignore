@@ -1,4 +1,4 @@
-﻿*.iml
+*.iml
 .gradle
 /local.properties
 /.idea/caches
@@ -21,3 +21,6 @@ java_pid*.hprof
 *.txt
 *.jsonl
 .idea/
+*.jar
+node_modules/
+functions/node_modules/

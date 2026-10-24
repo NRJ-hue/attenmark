@@ -99,12 +99,15 @@ service cloud.firestore {
       // - Cannot directly claim APPROVED status (must be REVIEW, PENDING, or REJECTED)
       // - Must specify a valid sessionId
       // - Document ID must be "${sessionId}_${studentUid}" ensuring atomic duplicate prevention on create
+      // - Must possess an authorized attendance claim issued by validateQrToken (or manual request exception)
       allow create: if (isAuthenticated() &&
                         request.auth.uid == request.resource.data.studentUid &&
                         request.resource.data.studentEmail == request.auth.token.email &&
                         request.resource.data.status != 'APPROVED' &&
                         request.resource.data.sessionId != null &&
-                        request.resource.data.sessionId != '') ||
+                        request.resource.data.sessionId != '' &&
+                        (exists(/databases/$(database)/documents/attendance_claims/$(request.resource.data.sessionId + "_" + request.auth.uid)) ||
+                         request.resource.data.matchResult == 'MANUAL_REQUEST')) ||
                        isFaculty();
 
       // Update constraints:
