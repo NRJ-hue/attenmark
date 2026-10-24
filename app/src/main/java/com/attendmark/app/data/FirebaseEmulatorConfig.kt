@@ -19,9 +19,13 @@ object FirebaseEmulatorConfig {
 
     /**
      * Default host: "10.0.2.2" maps to localhost from the Android Studio emulator.
-     * Can be customized to your computer's local network IP when testing on a physical phone.
+     * In debug builds, can be overridden at build time via -PemulatorHost=127.0.0.1 for USB-connected physical phones using adb reverse.
      */
-    var emulatorHost: String = "10.0.2.2"
+    var emulatorHost: String = if (BuildConfig.DEBUG && BuildConfig.EMULATOR_HOST.isNotEmpty()) {
+        BuildConfig.EMULATOR_HOST
+    } else {
+        "10.0.2.2"
+    }
     const val AUTH_PORT = 9099
     const val FIRESTORE_PORT = 8080
     const val FUNCTIONS_PORT = 5001

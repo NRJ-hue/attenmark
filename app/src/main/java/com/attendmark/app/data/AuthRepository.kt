@@ -203,7 +203,7 @@ class AuthRepository(
         /**
          * Connects Firebase Auth and Firestore to local emulators for development/testing.
          */
-        fun useEmulator(host: String = "10.0.2.2", authPort: Int = 9099, firestorePort: Int = 8080) {
+        fun useEmulator(host: String = FirebaseEmulatorConfig.emulatorHost, authPort: Int = 9099, firestorePort: Int = 8080) {
             if (!isEmulatorConfigured) {
                 try {
                     FirebaseAuth.getInstance().useEmulator(host, authPort)

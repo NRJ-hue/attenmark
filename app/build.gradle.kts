@@ -20,12 +20,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            val host = (project.findProperty("emulatorHost") as? String)?.takeIf { it.isNotBlank() } ?: "10.0.2.2"
+            buildConfigField("String", "EMULATOR_HOST", "\"$host\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "EMULATOR_HOST", "\"\"")
         }
     }
 
