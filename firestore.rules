@@ -59,20 +59,16 @@ service cloud.firestore {
     match /sessions/{courseCode} {
       allow read: if isAuthenticated();
 
-      allow create, update: if isFaculty() && 
-                               request.resource.data.facultyEmail == request.auth.token.email;
-
-      allow delete: if false;
+      // Sessions are created and managed strictly by backend Cloud Functions (startAttendanceSession, stopAttendanceSession)
+      allow create, update, delete: if false;
     }
 
     // 4. Historical & Immutable Attendance Sessions (attendance_sessions/{sessionId})
     match /attendance_sessions/{sessionId} {
       allow read: if isAuthenticated();
 
-      allow create, update: if isFaculty() && 
-                               request.resource.data.facultyEmail == request.auth.token.email;
-
-      allow delete: if false;
+      // Historical sessions are recorded strictly by backend Cloud Functions (startAttendanceSession)
+      allow create, update, delete: if false;
     }
 
     // 5. QR Tokens (qr_tokens/{tokenId})
@@ -109,7 +105,7 @@ service cloud.firestore {
       // - Cannot directly claim APPROVED status (must be REVIEW, PENDING, or REJECTED)
       // - Must specify a valid sessionId
       // - Document ID must strictly equal "${sessionId}_${studentUid}" to enforce one record per student per session
-      // - Must possess an authorized attendance claim issued by validateQrToken (or manual request exception)
+      // - Must possess an authorized attendance claim issued by validateQrToken (NO manual-request bypass)
       allow create: if (isAuthenticated() &&
                         request.auth.uid == request.resource.data.studentUid &&
                         recordId == (request.resource.data.sessionId + "_" + request.auth.uid) &&
@@ -117,14 +113,52 @@ service cloud.firestore {
                         request.resource.data.status != 'APPROVED' &&
                         request.resource.data.sessionId != null &&
                         request.resource.data.sessionId != '' &&
-                        (exists(/databases/$(database)/documents/attendance_claims/$(recordId)) ||
-                         request.resource.data.matchResult == 'MANUAL_REQUEST')) ||
+                        exists(/databases/$(database)/documents/attendance_claims/$(recordId))) ||
                        (isFaculty() && recordId == (request.resource.data.sessionId + "_" + request.resource.data.studentUid));
 
       // Update constraints:
       // Students cannot modify records once submitted.
       // Only authorized faculty who owns the course/session can approve or reject records.
       allow update: if isAuthorizedFacultyForRecord() &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
+
+      allow delete: if false;
+    }
+
+    // 8. Manual Attendance Requests (manual_attendance_requests/{requestId})
+    match /manual_attendance_requests/{requestId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.studentUid || isFaculty());
+
+      function isAuthorizedFacultyForManualRequest() {
+        return isFaculty() &&
+               (
+                 (exists(/databases/$(database)/documents/attendance_sessions/$(resource.data.sessionId)) &&
+                  get(/databases/$(database)/documents/attendance_sessions/$(resource.data.sessionId)).data.facultyEmail == request.auth.token.email) ||
+                 (exists(/databases/$(database)/documents/sessions/$(resource.data.courseCode)) &&
+                  get(/databases/$(database)/documents/sessions/$(resource.data.courseCode)).data.facultyEmail == request.auth.token.email)
+               );
+      }
+
+      // Student submission constraints for unverified manual requests:
+      // - Must be authenticated
+      // - Must submit on their own behalf
+      // - Cannot directly claim APPROVED status (must be REVIEW or PENDING)
+      // - Must be explicitly flagged as matchResult == 'MANUAL_REQUEST' and isQrVerified == false
+      // - Document ID must strictly equal "${sessionId}_${studentUid}"
+      allow create: if isAuthenticated() &&
+                       request.auth.uid == request.resource.data.studentUid &&
+                       requestId == (request.resource.data.sessionId + "_" + request.auth.uid) &&
+                       request.resource.data.studentEmail == request.auth.token.email &&
+                       request.resource.data.status != 'APPROVED' &&
+                       request.resource.data.status in ['REVIEW', 'PENDING'] &&
+                       request.resource.data.matchResult == 'MANUAL_REQUEST' &&
+                       request.resource.data.isQrVerified == false &&
+                       request.resource.data.sessionId != null &&
+                       request.resource.data.sessionId != '';
+
+      // Only authorized faculty who owns the course/session can approve or reject manual attendance requests.
+      // Students cannot modify their manual request once submitted.
+      allow update: if isAuthorizedFacultyForManualRequest() &&
                        request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'rejectionReason']);
 
       allow delete: if false;

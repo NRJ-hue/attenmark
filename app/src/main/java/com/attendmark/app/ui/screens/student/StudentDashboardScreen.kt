@@ -131,7 +131,7 @@ fun StudentDashboardScreen(
                                 overallScore = 0,
                                 rejectionReason = "Manual Request: $reasonText"
                             )
-                            firestoreRepo.submitRecord(record, onSuccess = {}, onFailure = {})
+                            firestoreRepo.submitManualRequest(record, onSuccess = {}, onFailure = {})
                             showManualRequestDialog = false
                         }
                     },

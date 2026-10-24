@@ -118,7 +118,39 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
 
   // ─── 2. Backend Collections Protection ─────────────────────────────────────
 
-  describe("qr_tokens and attendance_claims client lockdown", function () {
+  describe("backend collections client lockdown (sessions, attendance_sessions, qr_tokens, attendance_claims)", function () {
+    it("DENIES any client from directly creating or updating active session pointers in sessions", async function () {
+      const facultyCtx = testEnv.authenticatedContext("faculty-uid", {
+        email: "faculty@test.com"
+      });
+      const facultyDb = facultyCtx.firestore();
+
+      await assertFails(
+        setDoc(doc(facultyDb, "sessions/CS101"), {
+          sessionId: "client-direct-session",
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com",
+          isActive: true
+        })
+      );
+    });
+
+    it("DENIES any client from directly creating or updating historical sessions in attendance_sessions", async function () {
+      const facultyCtx = testEnv.authenticatedContext("faculty-uid", {
+        email: "faculty@test.com"
+      });
+      const facultyDb = facultyCtx.firestore();
+
+      await assertFails(
+        setDoc(doc(facultyDb, "attendance_sessions/direct-hist-session"), {
+          sessionId: "direct-hist-session",
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com",
+          isActive: true
+        })
+      );
+    });
+
     it("DENIES any client from directly creating or tampering with qr_tokens", async function () {
       const studentCtx = testEnv.authenticatedContext("student-uid-1", {
         email: "student1@test.com"
@@ -184,6 +216,28 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           studentEmail: "student1@test.com",
           courseCode: "CS101",
           status: "REVIEW",
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student attempting to bypass QR verification in attendance_records using matchResult=MANUAL_REQUEST without an attendance_claim", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      // Attacker attempts to bypass claim verification in verified attendance_records collection
+      await assertFails(
+        setDoc(doc(studentDb, `attendance_records/${sessionId}_student-uid-1`), {
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          overallScore: 0,
+          rejectionReason: "Bypass attempt without claim",
           timestamp: Date.now()
         })
       );
@@ -434,6 +488,153 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
       // Authorized faculty can approve (update status)
       await assertSucceeds(
         updateDoc(doc(facultyDb, `attendance_records/${validClaimDocId}`), {
+          status: "APPROVED"
+        })
+      );
+    });
+  });
+
+  // ─── 4. Manual Attendance Requests Security Rules ──────────────────────────
+
+  describe("manual_attendance_requests/{requestId} rules", function () {
+    const sessionId = "session-manual-test";
+    const manualDocId = `${sessionId}_student-uid-1`;
+
+    it("ALLOWS student to submit an unverified manual request with status REVIEW and isQrVerified=false", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      await assertSucceeds(
+        setDoc(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+          id: manualDocId,
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          studentName: "Alice",
+          courseCode: "CS101",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: 0,
+          rejectionReason: "Camera broken, unable to scan QR",
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student attempting to submit an APPROVED manual request", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      await assertFails(
+        setDoc(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+          id: manualDocId,
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "APPROVED",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: 100,
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student from updating or self-approving their manual request", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+      });
+
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      await assertFails(
+        updateDoc(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+          status: "APPROVED"
+        })
+      );
+    });
+
+    it("DENIES unauthorized Faculty B from approving Faculty A's manual request", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+        // Setup Faculty B
+        await setDoc(doc(adminDb, "users/faculty-b-uid"), {
+          role: "faculty",
+          email: "faculty_b@test.com",
+          name: "Prof. Other"
+        });
+      });
+
+      const facultyBCtx = testEnv.authenticatedContext("faculty-b-uid", {
+        email: "faculty_b@test.com"
+      });
+      const facultyBDb = facultyBCtx.firestore();
+
+      await assertFails(
+        updateDoc(doc(facultyBDb, `manual_attendance_requests/${manualDocId}`), {
+          status: "APPROVED"
+        })
+      );
+    });
+
+    it("ALLOWS authorized faculty to resolve and approve a manual request", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com"
+        });
+        await setDoc(doc(adminDb, `manual_attendance_requests/${manualDocId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false
+        });
+      });
+
+      const facultyCtx = testEnv.authenticatedContext("faculty-uid", {
+        email: "faculty@test.com"
+      });
+      const facultyDb = facultyCtx.firestore();
+
+      await assertSucceeds(
+        updateDoc(doc(facultyDb, `manual_attendance_requests/${manualDocId}`), {
           status: "APPROVED"
         })
       );

@@ -25,14 +25,17 @@ let courses = [];
 let currentCourse = null;
 let activeSession = null;
 let attendanceRecords = [];
+let manualRequests = [];
 let currentTab = "all";
 
 let qrRotationTimer = null;
 let qrCountdownInterval = null;
 let sessionDurationInterval = null;
 let recordsUnsubscribe = null;
+let manualRequestsUnsubscribe = null;
 let coursesUnsubscribe = null;
 let qrCodeInstance = null;
+let currentRejectIsManual = false;
 
 // ─── DOM Elements ─────────────────────────────────────────────────────────────
 const loginView = document.getElementById("login-view");
@@ -430,48 +433,7 @@ btnStartSession.addEventListener("click", async () => {
     launchActiveSessionUI();
   } catch (err) {
     console.error("Start session failed:", err);
-    // Client fallback batch write
-    try {
-      const sessionId = crypto.randomUUID();
-      const startedAt = Date.now();
-      const expiresAt = startedAt + durationMinutes * 60 * 1000;
-      const sessionPayload = {
-        sessionId,
-        courseCode: currentCourse.classCode,
-        facultyEmail: currentFacultyUser.email,
-        latitude,
-        longitude,
-        locationConfigured: true,
-        location: {
-          latitude,
-          longitude,
-          geofenceRadiusMeters: 50,
-          configuredAt: startedAt
-        },
-        isActive: true,
-        durationMinutes,
-        startedAt,
-        expiresAt
-      };
-
-      await setDoc(doc(db, "attendance_sessions", sessionId), sessionPayload);
-      await setDoc(doc(db, "sessions", currentCourse.classCode), sessionPayload);
-
-      activeSession = {
-        sessionId,
-        courseCode: currentCourse.classCode,
-        latitude,
-        longitude,
-        expiresAt,
-        startedAt,
-        isActive: true
-      };
-
-      launchActiveSessionUI();
-    } catch (fallbackErr) {
-      console.error("Fallback start failed:", fallbackErr);
-      showAlert(startSessionAlert, "Could not start session: " + err.message, "error");
-    }
+    showAlert(startSessionAlert, "Could not start session: " + (err.message || "Failed to start attendance session on server."), "error");
   } finally {
     btnStartSession.disabled = false;
     btnStartSession.textContent = "🚀 Start Attendance Session";
@@ -591,22 +553,14 @@ btnStopSession.addEventListener("click", async () => {
   try {
     const stopFn = httpsCallable(functions, "stopAttendanceSession");
     await stopFn({ courseCode: activeSession.courseCode });
+    stopSessionLocal();
   } catch (err) {
-    console.warn("Backend stop call failed, running atomic Firestore update:", err);
-    try {
-      const now = Date.now();
-      await updateDoc(doc(db, "sessions", activeSession.courseCode), { isActive: false, stoppedAt: now });
-      if (activeSession.sessionId) {
-        await updateDoc(doc(db, "attendance_sessions", activeSession.sessionId), { isActive: false, stoppedAt: now });
-      }
-    } catch (e) {
-      console.error("Direct stop update error:", e);
-    }
+    console.error("Backend stop call failed:", err);
+    alert("Could not end attendance session on server: " + (err.message || "Failed to stop session."));
+  } finally {
+    btnStopSession.disabled = false;
+    btnStopSession.textContent = "⏹ End Attendance Session";
   }
-
-  stopSessionLocal();
-  btnStopSession.disabled = false;
-  btnStopSession.textContent = "⏹ End Attendance Session";
 });
 
 function stopSessionLocal() {
@@ -619,29 +573,48 @@ function cleanUpActiveSession() {
   clearInterval(qrCountdownInterval);
   clearInterval(sessionDurationInterval);
   if (recordsUnsubscribe) recordsUnsubscribe();
+  if (manualRequestsUnsubscribe) manualRequestsUnsubscribe();
   qrCanvas.innerHTML = "";
   activeSession = null;
+  manualRequests = [];
 }
 
 // ─── 4. Live Attendance Dashboard ─────────────────────────────────────────────
 function listenToLiveAttendance() {
   if (!activeSession) return;
   if (recordsUnsubscribe) recordsUnsubscribe();
+  if (manualRequestsUnsubscribe) manualRequestsUnsubscribe();
 
-  const q = query(
+  // 1. Listen to verified attendance records
+  const qRecords = query(
     collection(db, "attendance_records"),
     where("courseCode", "==", activeSession.courseCode)
   );
 
-  recordsUnsubscribe = onSnapshot(q, (snapshot) => {
-    // Filter strictly to current session
+  recordsUnsubscribe = onSnapshot(qRecords, (snapshot) => {
     attendanceRecords = snapshot.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
+      .map((d) => ({ id: d.id, ...d.data(), isManualRequest: false }))
       .filter((r) => r.sessionId === activeSession.sessionId);
 
     updateStatsAndTable();
   }, (err) => {
     console.error("Error listening to attendance records:", err);
+  });
+
+  // 2. Listen to unverified manual attendance requests
+  const qManual = query(
+    collection(db, "manual_attendance_requests"),
+    where("courseCode", "==", activeSession.courseCode)
+  );
+
+  manualRequestsUnsubscribe = onSnapshot(qManual, (snapshot) => {
+    manualRequests = snapshot.docs
+      .map((d) => ({ id: d.id, ...d.data(), isManualRequest: true }))
+      .filter((r) => r.sessionId === activeSession.sessionId);
+
+    updateStatsAndTable();
+  }, (err) => {
+    console.error("Error listening to manual requests:", err);
   });
 }
 
@@ -649,12 +622,17 @@ function updateStatsAndTable() {
   const enrolledStudents = (currentCourse && currentCourse.enrolledStudents) || [];
   const enrolledCount = enrolledStudents.length;
 
-  const approvedRecords = attendanceRecords.filter((r) => r.status === "APPROVED");
-  const reviewRecords = attendanceRecords.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
-  const rejectedRecords = attendanceRecords.filter((r) => r.status === "REJECTED");
+  // Final records in attendance_records take precedence if a student has both
+  const verifiedStudentUids = new Set(attendanceRecords.map((r) => r.studentUid));
+  const activeManualRequests = manualRequests.filter((m) => !verifiedStudentUids.has(m.studentUid));
+  const combinedEntries = [...attendanceRecords, ...activeManualRequests];
+
+  const approvedRecords = combinedEntries.filter((r) => r.status === "APPROVED");
+  const reviewRecords = combinedEntries.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
+  const rejectedRecords = combinedEntries.filter((r) => r.status === "REJECTED");
 
   // Submitted student emails
-  const submittedEmails = new Set(attendanceRecords.map((r) => (r.studentEmail || "").toLowerCase()));
+  const submittedEmails = new Set(combinedEntries.map((r) => (r.studentEmail || "").toLowerCase()));
   const unsubmittedStudents = enrolledStudents.filter((e) => !submittedEmails.has(e.toLowerCase()));
 
   // Stats cards
@@ -664,13 +642,13 @@ function updateStatsAndTable() {
   statRejected.textContent = rejectedRecords.length;
 
   // Tab counters
-  countTabAll.textContent = attendanceRecords.length;
+  countTabAll.textContent = combinedEntries.length;
   countTabReview.textContent = reviewRecords.length;
   countTabApproved.textContent = approvedRecords.length;
   countTabRejected.textContent = rejectedRecords.length;
   countTabUnsubmitted.textContent = unsubmittedStudents.length;
 
-  renderRecordsTable(unsubmittedStudents);
+  renderRecordsTable(unsubmittedStudents, combinedEntries);
 }
 
 tabButtons.forEach((btn) => {
@@ -682,7 +660,7 @@ tabButtons.forEach((btn) => {
   });
 });
 
-function renderRecordsTable(unsubmittedStudents = []) {
+function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
   recordsTableBody.innerHTML = "";
 
   if (currentTab === "unsubmitted") {
@@ -707,10 +685,10 @@ function renderRecordsTable(unsubmittedStudents = []) {
     return;
   }
 
-  let filtered = attendanceRecords;
-  if (currentTab === "review") filtered = attendanceRecords.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
-  if (currentTab === "approved") filtered = attendanceRecords.filter((r) => r.status === "APPROVED");
-  if (currentTab === "rejected") filtered = attendanceRecords.filter((r) => r.status === "REJECTED");
+  let filtered = combinedEntries;
+  if (currentTab === "review") filtered = combinedEntries.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
+  if (currentTab === "approved") filtered = combinedEntries.filter((r) => r.status === "APPROVED");
+  if (currentTab === "rejected") filtered = combinedEntries.filter((r) => r.status === "REJECTED");
 
   if (filtered.length === 0) {
     tableEmptyState.style.display = "block";
@@ -722,7 +700,7 @@ function renderRecordsTable(unsubmittedStudents = []) {
 
   filtered.forEach((rec) => {
     const row = document.createElement("tr");
-    const isManual = rec.matchResult === "MANUAL_REQUEST";
+    const isManual = rec.isManualRequest || rec.matchResult === "MANUAL_REQUEST";
     const formattedTime = rec.timestamp ? new Date(rec.timestamp).toLocaleTimeString() : "Just now";
 
     let badgeClass = "badge-review";
@@ -733,8 +711,8 @@ function renderRecordsTable(unsubmittedStudents = []) {
     if (rec.status === "REVIEW" || rec.status === "PENDING") {
       actionsHtml = `
         <div style="display: flex; gap: 0.4rem;">
-          <button class="btn btn-success btn-sm btn-approve" data-id="${escapeHtml(rec.id)}">Approve</button>
-          <button class="btn btn-danger btn-sm btn-reject" data-id="${escapeHtml(rec.id)}">Reject</button>
+          <button class="btn btn-success btn-sm btn-approve" data-id="${escapeHtml(rec.id)}" data-manual="${isManual ? "true" : "false"}">Approve</button>
+          <button class="btn btn-danger btn-sm btn-reject" data-id="${escapeHtml(rec.id)}" data-manual="${isManual ? "true" : "false"}">Reject</button>
         </div>
       `;
     }
@@ -742,13 +720,13 @@ function renderRecordsTable(unsubmittedStudents = []) {
     row.innerHTML = `
       <td>
         <strong>${escapeHtml(rec.studentName || "Student")}</strong>
-        ${isManual ? `<span class="badge badge-manual" style="margin-left: 0.3rem;">Manual Request</span>` : ""}
+        ${isManual ? `<span class="badge badge-manual" style="margin-left: 0.3rem;">Manual Request (No QR)</span>` : ""}
         ${rec.rejectionReason ? `<div style="font-size: 0.75rem; color: #f87171; margin-top: 0.2rem;">Reason: ${escapeHtml(rec.rejectionReason)}</div>` : ""}
       </td>
       <td><code>${escapeHtml(rec.studentEmail || "")}</code></td>
       <td>${formattedTime}</td>
       <td>
-        <strong>${rec.overallScore || 0}%</strong>
+        ${isManual ? `<strong style="color: #f59e0b;">0% (Unverified)</strong>` : `<strong>${rec.overallScore || 0}%</strong>`}
         ${rec.matchPercentage ? `<span style="font-size: 0.75rem; color: var(--text-muted); display: block;">Match: ${rec.matchPercentage}%</span>` : ""}
       </td>
       <td>
@@ -760,31 +738,55 @@ function renderRecordsTable(unsubmittedStudents = []) {
     // Action button listeners
     const btnApprove = row.querySelector(".btn-approve");
     if (btnApprove) {
-      btnApprove.addEventListener("click", () => approveRecord(rec.id));
+      btnApprove.addEventListener("click", () => approveRecord(rec.id, isManual));
     }
 
     const btnReject = row.querySelector(".btn-reject");
     if (btnReject) {
-      btnReject.addEventListener("click", () => openRejectModal(rec.id));
+      btnReject.addEventListener("click", () => openRejectModal(rec.id, isManual));
     }
 
     recordsTableBody.appendChild(row);
   });
 }
 
-async function approveRecord(recordId) {
+async function approveRecord(recordId, isManual = false) {
   try {
-    await updateDoc(doc(db, "attendance_records", recordId), {
-      status: "APPROVED"
-    });
+    if (isManual) {
+      // 1. Mark manual request as approved
+      await updateDoc(doc(db, "manual_attendance_requests", recordId), {
+        status: "APPROVED"
+      });
+      // 2. Authorized faculty writes the resolved final attendance record in attendance_records
+      const manualDoc = manualRequests.find((m) => m.id === recordId);
+      if (manualDoc) {
+        await setDoc(doc(db, "attendance_records", recordId), {
+          sessionId: manualDoc.sessionId,
+          studentUid: manualDoc.studentUid,
+          studentName: manualDoc.studentName || "Student",
+          studentEmail: manualDoc.studentEmail,
+          courseCode: manualDoc.courseCode,
+          status: "APPROVED",
+          matchResult: "MANUAL_REQUEST_APPROVED",
+          overallScore: 100,
+          timestamp: Date.now(),
+          rejectionReason: null
+        });
+      }
+    } else {
+      await updateDoc(doc(db, "attendance_records", recordId), {
+        status: "APPROVED"
+      });
+    }
   } catch (err) {
     console.error("Approve failed:", err);
     alert("Could not approve record: " + err.message);
   }
 }
 
-function openRejectModal(recordId) {
+function openRejectModal(recordId, isManual = false) {
   rejectRecordId.value = recordId;
+  currentRejectIsManual = isManual;
   rejectReasonText.value = "";
   modalRejectReason.classList.add("open");
 }
@@ -795,7 +797,8 @@ formRejectReason.addEventListener("submit", async (e) => {
   const reason = rejectReasonText.value.trim() || "Rejected by faculty";
 
   try {
-    await updateDoc(doc(db, "attendance_records", id), {
+    const collName = currentRejectIsManual ? "manual_attendance_requests" : "attendance_records";
+    await updateDoc(doc(db, collName, id), {
       status: "REJECTED",
       rejectionReason: reason
     });

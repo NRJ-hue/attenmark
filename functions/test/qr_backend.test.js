@@ -199,6 +199,40 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       assert.strictEqual(pointerDoc.data().sessionId, res.sessionId);
       assert.strictEqual(pointerDoc.data().isActive, true);
     });
+
+    it("verifies that a failed startAttendanceSession call does not produce an active session or partial session record", async function () {
+      const countBefore = (await db.collection("attendance_sessions").get()).size;
+
+      // Attempt start with unauthorized faculty
+      const otherAuth = { uid: OTHER_FACULTY_UID, email: OTHER_FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, otherAuth, {
+          courseCode: COURSE_CODE,
+          durationMinutes: 10,
+          latitude: 37.7749,
+          longitude: -122.4194
+        }),
+        (err) => err.code === "permission-denied"
+      );
+
+      // Attempt start with invalid/missing coordinates
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, facultyAuth, {
+          courseCode: COURSE_CODE,
+          durationMinutes: 10
+        }),
+        (err) => err.code === "invalid-argument"
+      );
+
+      // Verify that the existing active pointer was unchanged and no new attendance_sessions record was created
+      const pointerDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.strictEqual(pointerDoc.data().sessionId, activeSessionId);
+      assert.strictEqual(pointerDoc.data().isActive, true);
+
+      const countAfter = (await db.collection("attendance_sessions").get()).size;
+      assert.strictEqual(countAfter, countBefore, "No partial or orphaned attendance_sessions records were created on failure");
+    });
   });
 
   // ─── 2. stopAttendanceSession Tests ────────────────────────────────────────

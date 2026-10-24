@@ -2,6 +2,7 @@ package com.attendmark.app.data
 
 import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -135,9 +136,8 @@ class FirestoreRepository {
     // ---- Session Management ----
 
     /**
-     * Starts a new attendance session.
-     * Generates a unique sessionId, records the immutable historical session in attendance_sessions,
-     * and updates the active pointer in sessions/{courseCode}.
+     * Starts a new attendance session via backend Cloud Function.
+     * Enforces authoritative server-side role check, course ownership, and geofence coordinates.
      */
     fun startSession(
         courseCode: String, 
@@ -147,50 +147,37 @@ class FirestoreRepository {
         durationMinutes: Int,
         onSuccess: (Long) -> Unit
     ) {
-        val sessionId = UUID.randomUUID().toString()
-        val startedAt = System.currentTimeMillis()
-        val expiresAt = startedAt + (durationMinutes * 60 * 1000L)
-
-        // 1. Immutable historical record
-        val historicalSessionData = hashMapOf(
-            "sessionId" to sessionId,
+        val payload = hashMapOf(
             "courseCode" to courseCode,
-            "facultyEmail" to facultyEmail,
             "latitude" to latitude,
             "longitude" to longitude,
-            "isActive" to true,
-            "durationMinutes" to durationMinutes,
-            "startedAt" to startedAt,
-            "expiresAt" to expiresAt
+            "durationMinutes" to durationMinutes
         )
-        attendanceSessionsCollection.document(sessionId).set(historicalSessionData)
 
-        // 2. Active pointer for fast lookup by courseCode
-        val activePointerData = hashMapOf(
-            "sessionId" to sessionId,
-            "courseCode" to courseCode,
-            "facultyEmail" to facultyEmail,
-            "latitude" to latitude,
-            "longitude" to longitude,
-            "isActive" to true,
-            "expiresAt" to expiresAt
-        )
-        sessionsCollection.document(courseCode).set(activePointerData)
-            .addOnSuccessListener { onSuccess(expiresAt) }
+        FirebaseFunctions.getInstance()
+            .getHttpsCallable("startAttendanceSession")
+            .call(payload)
+            .addOnSuccessListener { result ->
+                val resData = result.data as? Map<*, *>
+                val expiresAt = (resData?.get("expiresAt") as? Number)?.toLong()
+                    ?: (System.currentTimeMillis() + durationMinutes * 60 * 1000L)
+                onSuccess(expiresAt)
+            }
+            .addOnFailureListener { e ->
+                Log.e("FirestoreRepository", "Failed to start attendance session via Cloud Function", e)
+            }
     }
 
+    /**
+     * Stops an active attendance session via backend Cloud Function.
+     */
     fun stopSession(courseCode: String) {
-        sessionsCollection.document(courseCode).get()
-            .addOnSuccessListener { doc ->
-                val sessionId = doc.getString("sessionId")
-                if (!sessionId.isNullOrBlank()) {
-                    attendanceSessionsCollection.document(sessionId)
-                        .update("isActive", false, "stoppedAt", System.currentTimeMillis())
-                }
-                sessionsCollection.document(courseCode).update("isActive", false)
-            }
-            .addOnFailureListener {
-                sessionsCollection.document(courseCode).update("isActive", false)
+        val payload = hashMapOf("courseCode" to courseCode)
+        FirebaseFunctions.getInstance()
+            .getHttpsCallable("stopAttendanceSession")
+            .call(payload)
+            .addOnFailureListener { e ->
+                Log.e("FirestoreRepository", "Failed to stop attendance session via Cloud Function", e)
             }
     }
 
@@ -261,6 +248,45 @@ class FirestoreRepository {
             }
             .addOnFailureListener { e ->
                 Log.w("FirestoreRepository", "Error writing record", e)
+                onFailure(e)
+            }
+    }
+
+    /**
+     * Submits an unverified manual attendance request to manual_attendance_requests collection.
+     * Separated from verified attendance_records so manual requests cannot bypass QR claim verification
+     * or self-assign APPROVED status.
+     */
+    fun submitManualRequest(record: AttendanceRecord, onSuccess: () -> Unit, onFailure: (Exception) -> Unit) {
+        val docId = if (record.sessionId.isNotBlank() && record.studentUid.isNotBlank()) {
+            "${record.sessionId}_${record.studentUid}"
+        } else {
+            record.id
+        }
+
+        val requestMap = hashMapOf(
+            "id" to docId,
+            "sessionId" to record.sessionId,
+            "studentUid" to record.studentUid,
+            "studentName" to record.studentName,
+            "studentEmail" to record.studentEmail,
+            "courseCode" to record.courseCode,
+            "status" to "REVIEW",
+            "matchResult" to "MANUAL_REQUEST",
+            "isQrVerified" to false,
+            "overallScore" to 0,
+            "timestamp" to record.timestamp,
+            "rejectionReason" to record.rejectionReason
+        )
+
+        db.collection("manual_attendance_requests").document(docId)
+            .set(requestMap)
+            .addOnSuccessListener {
+                Log.d("FirestoreRepository", "Manual request successfully written!")
+                onSuccess()
+            }
+            .addOnFailureListener { e ->
+                Log.w("FirestoreRepository", "Error writing manual request", e)
                 onFailure(e)
             }
     }
