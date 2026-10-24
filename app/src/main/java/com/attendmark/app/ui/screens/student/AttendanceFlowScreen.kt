@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -57,6 +58,7 @@ enum class AttendanceFlowStep {
 @Composable
 fun AttendanceFlowScreen(
     courseCode: String = "CS101",
+    sessionId: String = "",
     onResult: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -124,7 +126,43 @@ fun AttendanceFlowScreen(
                 .padding(padding)
                 .background(DarkBackground)
         ) {
-            if (hasCameraPermission) {
+            if (sessionId.isBlank()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = StatusRejected,
+                        modifier = Modifier.size(64.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "QR Token Required",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = Color.White
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "You cannot access biometric verification without first scanning a valid session QR code.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.8f),
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Button(
+                        onClick = onBack,
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Return to Dashboard", color = Color.White)
+                    }
+                }
+            } else if (hasCameraPermission) {
                 when (currentStep) {
                     AttendanceFlowStep.LIVENESS_CHALLENGE -> {
                         LivenessChallengeStep(
@@ -205,6 +243,35 @@ fun AttendanceFlowScreen(
                                         com.attendmark.app.data.ImageValidationUtil.isImageValid(it) 
                                     } ?: false
 
+                                    // GPS Classroom Proximity Verification
+                                    statusMessage = "Verifying GPS classroom proximity..."
+                                    val locationService = com.attendmark.app.data.LocationService(context)
+                                    val (loc, locErr) = locationService.getCurrentLocation()
+                                    val firestoreRepo = FirestoreRepository()
+                                    val activeSession = withContext(Dispatchers.IO) {
+                                        firestoreRepo.getSessionById(sessionId) ?: firestoreRepo.getActiveSession(courseCode)
+                                    }
+                                    val facLat = (activeSession?.get("latitude") as? Number)?.toDouble() ?: 0.0
+                                    val facLon = (activeSession?.get("longitude") as? Number)?.toDouble() ?: 0.0
+
+                                    var gpsValid = true
+                                    var gpsRejectionReason: String? = null
+
+                                    if (facLat != 0.0 || facLon != 0.0) {
+                                        if (loc != null) {
+                                            val distance = com.attendmark.app.data.LocationService.calculateDistance(
+                                                loc.latitude, loc.longitude, facLat, facLon
+                                            )
+                                            if (distance > 50f) {
+                                                gpsValid = false
+                                                gpsRejectionReason = "GPS verification failed: You are ${distance.toInt()}m from classroom (max 50m allowed)."
+                                            }
+                                        } else {
+                                            gpsValid = false
+                                            gpsRejectionReason = "GPS verification failed: ${locErr ?: "Could not determine GPS coordinates"}"
+                                        }
+                                    }
+
                                     // Calculate 100-point Overall Trust Score
                                     var trustScore = 0
                                     // 1. Face Match (60 Points max)
@@ -215,38 +282,41 @@ fun AttendanceFlowScreen(
                                     if (isClassroomValid) {
                                         trustScore += 20
                                     }
+                                    if (!gpsValid) {
+                                        trustScore = (trustScore * 0.5f).toInt()
+                                    }
 
-                                    // Status Overrides based on total score
+                                    // Status Overrides based on total score and verification checks
                                     // Students cannot submit directly as APPROVED per Firestore rules;
                                     // High trust scores submit as REVIEW awaiting confirmation
                                     val finalStatus = when {
+                                        !gpsValid -> AttendanceStatus.REJECTED
                                         matchResult == FaceRecognitionService.MatchResult.NO_MATCH || matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH -> AttendanceStatus.REJECTED
                                         trustScore >= 50 -> AttendanceStatus.REVIEW
                                         else -> AttendanceStatus.REJECTED
+                                    }
+
+                                    val finalRejectionReason = when {
+                                        !gpsValid -> gpsRejectionReason
+                                        matchResult == FaceRecognitionService.MatchResult.NO_MATCH || matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH ->
+                                            "Face match confidence ($matchPct%) below threshold."
+                                        trustScore < 50 ->
+                                            "Overall verification trust score insufficient ($trustScore/100)."
+                                        else -> null
                                     }
 
                                     // Compress photos to Base64 for Firestore
                                     val classroomBase64 = classroomCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
                                     val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
 
-                                    val firestoreRepo = FirestoreRepository()
-                                    val activeSession = withContext(Dispatchers.IO) {
-                                        firestoreRepo.getActiveSession(courseCode)
-                                    }
-                                    val currentSessionId = (activeSession?.get("sessionId") as? String)
-                                        ?: "session_${courseCode}_${System.currentTimeMillis()}"
                                     val currentUid = if (userUid.isNotBlank()) userUid
                                         else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
 
-                                    val docId = if (currentSessionId.isNotBlank() && currentUid.isNotBlank()) {
-                                        "${currentSessionId}_${currentUid}"
-                                    } else {
-                                        java.util.UUID.randomUUID().toString()
-                                    }
+                                    val docId = "${sessionId}_${currentUid}"
 
                                     val record = AttendanceRecord(
                                         id = docId,
-                                        sessionId = currentSessionId,
+                                        sessionId = sessionId,
                                         studentUid = currentUid,
                                         studentName = userName,
                                         studentEmail = userEmail,
@@ -259,13 +329,18 @@ fun AttendanceFlowScreen(
                                         status = finalStatus,
                                         overallScore = trustScore,
                                         selfieBase64 = selfieBase64,
-                                        classroomPhotoBase64 = classroomBase64
+                                        classroomPhotoBase64 = classroomBase64,
+                                        rejectionReason = finalRejectionReason
                                     )
                                     
+                                    statusMessage = "Submitting verified attendance record..."
                                     firestoreRepo.submitRecord(
                                         record = record,
                                         onSuccess = { onResult(record.id) },
-                                        onFailure = { onResult("error") }
+                                        onFailure = { err ->
+                                            Log.e("AttendanceFlowScreen", "Error submitting attendance record", err)
+                                            onResult("error")
+                                        }
                                     )
                                 }
                             }

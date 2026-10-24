@@ -3,6 +3,7 @@ package com.attendmark.app.data
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
 
 /**
  * Manages configuration and connection to the Firebase Emulator Suite for local development.
@@ -21,6 +22,7 @@ object FirebaseEmulatorConfig {
     var emulatorHost: String = "10.0.2.2"
     const val AUTH_PORT = 9099
     const val FIRESTORE_PORT = 8080
+    const val FUNCTIONS_PORT = 5001
 
     private var isConfigured = false
 
@@ -29,8 +31,9 @@ object FirebaseEmulatorConfig {
         try {
             FirebaseAuth.getInstance().useEmulator(host, AUTH_PORT)
             FirebaseFirestore.getInstance().useEmulator(host, FIRESTORE_PORT)
+            FirebaseFunctions.getInstance().useEmulator(host, FUNCTIONS_PORT)
             isConfigured = true
-            Log.i("FirebaseEmulator", "Connected to Firebase Emulator (Auth: $host:$AUTH_PORT, Firestore: $host:$FIRESTORE_PORT)")
+            Log.i("FirebaseEmulator", "Connected to Firebase Emulator (Auth: $host:$AUTH_PORT, Firestore: $host:$FIRESTORE_PORT, Functions: $host:$FUNCTIONS_PORT)")
         } catch (e: Exception) {
             Log.w("FirebaseEmulator", "Could not configure emulator: ${e.message}")
         }

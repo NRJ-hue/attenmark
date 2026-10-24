@@ -29,6 +29,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -74,8 +78,9 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // ML Kit Face Detection (for liveness challenges)
+    // ML Kit Face Detection (for liveness challenges) & Barcode Scanning (for QR)
     implementation(libs.mlkit.face.detection)
+    implementation(libs.mlkit.barcode.scanning)
 
     // TensorFlow Lite (for face embedding/matching)
     implementation(libs.tensorflow.lite)
@@ -92,6 +97,7 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.firestore)
     implementation(libs.firebase.auth)
+    implementation(libs.firebase.functions)
 
     // Guava (Required for CameraX ListenableFuture)
     implementation(libs.guava)

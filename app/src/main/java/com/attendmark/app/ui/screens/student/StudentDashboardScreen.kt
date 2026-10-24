@@ -53,43 +53,15 @@ fun StudentDashboardScreen(
     val firestoreRepo = remember { com.attendmark.app.data.FirestoreRepository() }
     val locationService = remember { com.attendmark.app.data.LocationService(context) }
     
-    var locationError by remember { mutableStateOf<String?>(null) }
-    var isCheckingLocation by remember { mutableStateOf(false) }
+    var activeSession by remember { mutableStateOf<Map<String, Any>?>(null) }
+    var isPrefetchingSession by remember { mutableStateOf(true) }
 
-    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val granted = permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true || 
-                      permissions[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (granted) {
-            isCheckingLocation = true
-            locationError = null
-            scope.launch {
-                val (loc, errorMsg) = locationService.getCurrentLocation()
-                if (loc != null) {
-                    val session = firestoreRepo.getActiveSession(courseCode)
-                    if (session != null) {
-                        val facLat = session["latitude"] as? Double ?: 0.0
-                        val facLon = session["longitude"] as? Double ?: 0.0
-                        val distance = com.attendmark.app.data.LocationService.calculateDistance(
-                            loc.latitude, loc.longitude, facLat, facLon
-                        )
-                        if (distance <= 50f) {
-                            onMarkAttendance()
-                        } else {
-                            locationError = "You are ${distance.toInt()} meters away. You must be within 50 meters of the classroom."
-                        }
-                    } else {
-                        locationError = "No active session for $courseName. Ask your faculty to start a session."
-                    }
-                } else {
-                    locationError = "Location Error: ${errorMsg ?: "Ensure GPS is ON"}"
-                }
-                isCheckingLocation = false
-            }
-        } else {
-            locationError = "Location permission is required to verify classroom presence."
+    LaunchedEffect(courseCode) {
+        isPrefetchingSession = true
+        activeSession = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            firestoreRepo.getActiveSession(courseCode)
         }
+        isPrefetchingSession = false
     }
 
     LaunchedEffect(userEmail, courseCode) {
@@ -215,18 +187,11 @@ fun StudentDashboardScreen(
                     Icon(Icons.Default.Edit, contentDescription = "Manual Request")
                 }
                 ExtendedFloatingActionButton(
-                    onClick = {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                android.Manifest.permission.ACCESS_COARSE_LOCATION
-                            )
-                        )
-                    },
+                    onClick = { onMarkAttendance() },
                     containerColor = PrimaryBlue,
                     contentColor = Color.White,
-                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
-                    text = { Text(if (isCheckingLocation) "Checking Location..." else "Mark Attendance") }
+                    icon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
+                    text = { Text("Mark Attendance") }
                 )
             }
         }
@@ -320,19 +285,36 @@ fun StudentDashboardScreen(
                 }
             }
 
-            // Location Error Banner
+            // Active Session Status Banner
             item {
-                AnimatedVisibility(visible = locationError != null) {
-                    locationError?.let {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = StatusRejected.copy(alpha = 0.1f)),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.LocationOff, contentDescription = null, tint = StatusRejected)
-                                Spacer(Modifier.width(12.dp))
-                                Text(it, color = StatusRejected, style = MaterialTheme.typography.bodyMedium)
+                if (activeSession != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = StatusApproved.copy(alpha = 0.12f)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, StatusApproved.copy(alpha = 0.5f))
+                    ) {
+                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = StatusApproved)
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text("Session In Progress", color = StatusApproved, style = MaterialTheme.typography.titleSmall)
+                                Text("Tap 'Mark Attendance' to scan the rotating classroom QR code.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                } else if (!isPrefetchingSession) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = TextSecondary)
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text("No Active Session", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                                Text("Wait for your instructor to launch the session on the projector.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }

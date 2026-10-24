@@ -16,6 +16,7 @@ import com.attendmark.app.ui.screens.faculty.FacultyLobbyScreen
 import com.attendmark.app.ui.screens.login.LoginScreen
 import com.attendmark.app.ui.screens.student.AttendanceFlowScreen
 import com.attendmark.app.ui.screens.student.AttendanceResultScreen
+import com.attendmark.app.ui.screens.student.QrScannerScreen
 import com.attendmark.app.ui.screens.student.StudentDashboardScreen
 import com.attendmark.app.ui.screens.student.StudentLobbyScreen
 
@@ -32,8 +33,12 @@ sealed class Screen(val route: String) {
         fun createRoute(courseCode: String, courseName: String) =
             "faculty_dashboard/${courseCode}/${java.net.URLEncoder.encode(courseName, "UTF-8")}"
     }
-    object AttendanceFlow : Screen("attendance_flow/{courseCode}") {
-        fun createRoute(courseCode: String) = "attendance_flow/$courseCode"
+    object QrScanner : Screen("qr_scanner/{courseCode}/{courseName}") {
+        fun createRoute(courseCode: String, courseName: String) =
+            "qr_scanner/${courseCode}/${java.net.URLEncoder.encode(courseName, "UTF-8")}"
+    }
+    object AttendanceFlow : Screen("attendance_flow/{courseCode}/{sessionId}") {
+        fun createRoute(courseCode: String, sessionId: String) = "attendance_flow/$courseCode/$sessionId"
     }
     object AttendanceResult : Screen("attendance_result/{recordId}") {
         fun createRoute(recordId: String) = "attendance_result/$recordId"
@@ -137,7 +142,7 @@ fun AttendMarkApp() {
                 courseCode = courseCode,
                 courseName = courseName,
                 onMarkAttendance = {
-                    navController.navigate(Screen.AttendanceFlow.createRoute(courseCode))
+                    navController.navigate(Screen.QrScanner.createRoute(courseCode, courseName))
                 },
                 onLogout = {
                     navController.navigate(Screen.Login.route) {
@@ -176,12 +181,42 @@ fun AttendMarkApp() {
         }
 
         composable(
+            route = Screen.QrScanner.route,
+            arguments = listOf(
+                navArgument("courseCode") { type = NavType.StringType },
+                navArgument("courseName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val courseCode = backStackEntry.arguments?.getString("courseCode") ?: ""
+            val courseName = java.net.URLDecoder.decode(
+                backStackEntry.arguments?.getString("courseName") ?: "", "UTF-8"
+            )
+            QrScannerScreen(
+                courseCode = courseCode,
+                courseName = courseName,
+                onScanSuccess = { validatedSessionId ->
+                    navController.navigate(Screen.AttendanceFlow.createRoute(courseCode, validatedSessionId)) {
+                        popUpTo(Screen.QrScanner.route) { inclusive = true }
+                    }
+                },
+                onBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable(
             route = Screen.AttendanceFlow.route,
-            arguments = listOf(navArgument("courseCode") { type = NavType.StringType })
+            arguments = listOf(
+                navArgument("courseCode") { type = NavType.StringType },
+                navArgument("sessionId") { type = NavType.StringType }
+            )
         ) { backStackEntry ->
             val courseCode = backStackEntry.arguments?.getString("courseCode") ?: "CS101"
+            val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
             AttendanceFlowScreen(
                 courseCode = courseCode,
+                sessionId = sessionId,
                 onResult = { recordId ->
                     navController.navigate(Screen.AttendanceResult.createRoute(recordId)) {
                         popUpTo(Screen.AttendanceFlow.route) { inclusive = true }
