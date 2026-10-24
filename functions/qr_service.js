@@ -9,6 +9,151 @@ class ServiceError extends Error {
 }
 
 /**
+ * Server-side core implementation of startAttendanceSession.
+ * Atomically creates a unique historical session and sets the active pointer.
+ *
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {{ uid: string, email: string } | null} authContext
+ * @param {{ courseCode: string, durationMinutes?: number, latitude?: number, longitude?: number }} data
+ */
+async function startAttendanceSessionCore(db, authContext, data) {
+  if (!authContext || !authContext.uid) {
+    throw new ServiceError("unauthenticated", "User must be authenticated.");
+  }
+
+  if (!data || !data.courseCode) {
+    throw new ServiceError("invalid-argument", "Missing required field: courseCode.");
+  }
+
+  const { courseCode } = data;
+  const durationMinutes = Number(data.durationMinutes) > 0 ? Number(data.durationMinutes) : 10;
+  const latitude = typeof data.latitude === "number" ? data.latitude : 0.0;
+  const longitude = typeof data.longitude === "number" ? data.longitude : 0.0;
+
+  // Verify faculty role
+  const userDoc = await db.collection("users").doc(authContext.uid).get();
+  if (!userDoc.exists || userDoc.data().role !== "faculty") {
+    throw new ServiceError("permission-denied", "Only faculty members can start attendance sessions.");
+  }
+
+  const facultyEmail = (authContext.email || userDoc.data().email || "").toLowerCase();
+
+  // Verify course ownership
+  const coursesSnapshot = await db.collection("courses").where("classCode", "==", courseCode).get();
+  if (coursesSnapshot.empty) {
+    throw new ServiceError("not-found", `Course with code ${courseCode} not found.`);
+  }
+
+  const courseDoc = coursesSnapshot.docs[0];
+  const courseFacultyEmail = (courseDoc.data().facultyEmail || "").toLowerCase();
+  if (courseFacultyEmail !== facultyEmail) {
+    throw new ServiceError("permission-denied", "You are not authorized to start a session for this course.");
+  }
+
+  // Generate unique session ID
+  const sessionId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const expiresAt = startedAt + durationMinutes * 60 * 1000;
+
+  const sessionPayload = {
+    sessionId,
+    courseCode,
+    facultyEmail,
+    latitude,
+    longitude,
+    isActive: true,
+    durationMinutes,
+    startedAt,
+    expiresAt
+  };
+
+  const batch = db.batch();
+
+  // 1. Immutable historical record in attendance_sessions/{sessionId}
+  const historicalRef = db.collection("attendance_sessions").doc(sessionId);
+  batch.set(historicalRef, sessionPayload);
+
+  // 2. Active pointer in sessions/{courseCode}
+  const activePointerRef = db.collection("sessions").doc(courseCode);
+  batch.set(activePointerRef, sessionPayload);
+
+  await batch.commit();
+
+  return {
+    sessionId,
+    courseCode,
+    startedAt,
+    expiresAt,
+    durationMinutes
+  };
+}
+
+/**
+ * Server-side core implementation of stopAttendanceSession.
+ * Atomically marks both the active session pointer and historical session as inactive.
+ *
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {{ uid: string, email: string } | null} authContext
+ * @param {{ courseCode: string }} data
+ */
+async function stopAttendanceSessionCore(db, authContext, data) {
+  if (!authContext || !authContext.uid) {
+    throw new ServiceError("unauthenticated", "User must be authenticated.");
+  }
+
+  if (!data || !data.courseCode) {
+    throw new ServiceError("invalid-argument", "Missing required field: courseCode.");
+  }
+
+  const { courseCode } = data;
+
+  const userDoc = await db.collection("users").doc(authContext.uid).get();
+  if (!userDoc.exists || userDoc.data().role !== "faculty") {
+    throw new ServiceError("permission-denied", "Only faculty members can stop attendance sessions.");
+  }
+
+  const facultyEmail = (authContext.email || userDoc.data().email || "").toLowerCase();
+
+  const sessionRef = db.collection("sessions").doc(courseCode);
+  const sessionDoc = await sessionRef.get();
+
+  if (!sessionDoc.exists) {
+    throw new ServiceError("not-found", `No active session record found for course ${courseCode}.`);
+  }
+
+  const sessionData = sessionDoc.data();
+  if ((sessionData.facultyEmail || "").toLowerCase() !== facultyEmail) {
+    throw new ServiceError("permission-denied", "You are not authorized to stop this course session.");
+  }
+
+  const stoppedAt = Date.now();
+  const sessionId = sessionData.sessionId;
+
+  const batch = db.batch();
+  batch.update(sessionRef, {
+    isActive: false,
+    stoppedAt
+  });
+
+  if (sessionId) {
+    const historicalRef = db.collection("attendance_sessions").doc(sessionId);
+    batch.update(historicalRef, {
+      isActive: false,
+      stoppedAt
+    });
+  }
+
+  await batch.commit();
+
+  return {
+    success: true,
+    courseCode,
+    sessionId,
+    stoppedAt
+  };
+}
+
+/**
  * Server-side core implementation of generateQrToken.
  *
  * @param {FirebaseFirestore.Firestore} db
@@ -177,8 +322,13 @@ async function validateQrTokenCore(db, authContext, data) {
       throw new ServiceError("failed-precondition", "Attendance session has expired.");
     }
 
+    // Strict validation: Verify token's sessionId matches the authoritative active session pointer
     if (sessionDoc.data().sessionId !== sessionId) {
       throw new ServiceError("invalid-argument", "Session mismatch: active session has changed.");
+    }
+
+    if (tokenData.sessionId !== sessionDoc.data().sessionId) {
+      throw new ServiceError("invalid-argument", "QR token is from an old or inactive session.");
     }
 
     // C. Verify final attendance record has not already been submitted
@@ -254,6 +404,8 @@ async function validateQrTokenCore(db, authContext, data) {
 
 module.exports = {
   ServiceError,
+  startAttendanceSessionCore,
+  stopAttendanceSessionCore,
   generateQrTokenCore,
   validateQrTokenCore
 };

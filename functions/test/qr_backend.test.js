@@ -2,7 +2,12 @@ const assert = require("assert");
 const { getApps, initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const config = require("../config");
-const { generateQrTokenCore, validateQrTokenCore } = require("../qr_service");
+const {
+  startAttendanceSessionCore,
+  stopAttendanceSessionCore,
+  generateQrTokenCore,
+  validateQrTokenCore
+} = require("../qr_service");
 
 // Configure admin to point to the local Firestore emulator
 process.env.FIRESTORE_EMULATOR_HOST = "127.0.0.1:8080";
@@ -14,7 +19,7 @@ if (!getApps().length) {
 
 const db = getFirestore();
 
-describe("Phase 3: QR Backend Cloud Functions", function () {
+describe("Backend Cloud Functions & Session Lifecycle", function () {
   this.timeout(10000);
 
   const FACULTY_UID = "fac-uid-101";
@@ -99,7 +104,95 @@ describe("Phase 3: QR Backend Cloud Functions", function () {
     });
   });
 
-  // ─── 1. generateQrToken Tests ──────────────────────────────────────────────
+  // ─── 1. startAttendanceSession Tests ───────────────────────────────────────
+
+  describe("startAttendanceSession", function () {
+    it("rejects unauthenticated caller", async function () {
+      await assert.rejects(
+        startAttendanceSessionCore(db, null, { courseCode: COURSE_CODE }),
+        (err) => err.code === "unauthenticated"
+      );
+    });
+
+    it("rejects student caller attempting to start session", async function () {
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, studentAuth, { courseCode: COURSE_CODE }),
+        (err) => err.code === "permission-denied"
+      );
+    });
+
+    it("rejects faculty not assigned to this course", async function () {
+      const otherAuth = { uid: OTHER_FACULTY_UID, email: OTHER_FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, otherAuth, { courseCode: COURSE_CODE }),
+        (err) => err.code === "permission-denied"
+      );
+    });
+
+    it("creates unique session ID and writes both historical and active pointer", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const res = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        durationMinutes: 15
+      });
+
+      assert.ok(res.sessionId);
+      assert.notStrictEqual(res.sessionId, activeSessionId);
+      assert.strictEqual(res.courseCode, COURSE_CODE);
+      assert.strictEqual(res.durationMinutes, 15);
+
+      // Verify historical record
+      const histDoc = await db.collection("attendance_sessions").doc(res.sessionId).get();
+      assert.ok(histDoc.exists);
+      assert.strictEqual(histDoc.data().isActive, true);
+      assert.strictEqual(histDoc.data().sessionId, res.sessionId);
+
+      // Verify active pointer
+      const pointerDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.ok(pointerDoc.exists);
+      assert.strictEqual(pointerDoc.data().sessionId, res.sessionId);
+      assert.strictEqual(pointerDoc.data().isActive, true);
+    });
+  });
+
+  // ─── 2. stopAttendanceSession Tests ────────────────────────────────────────
+
+  describe("stopAttendanceSession", function () {
+    it("rejects unauthenticated caller", async function () {
+      await assert.rejects(
+        stopAttendanceSessionCore(db, null, { courseCode: COURSE_CODE }),
+        (err) => err.code === "unauthenticated"
+      );
+    });
+
+    it("rejects non-owner faculty from stopping session", async function () {
+      const otherAuth = { uid: OTHER_FACULTY_UID, email: OTHER_FACULTY_EMAIL };
+      await assert.rejects(
+        stopAttendanceSessionCore(db, otherAuth, { courseCode: COURSE_CODE }),
+        (err) => err.code === "permission-denied"
+      );
+    });
+
+    it("atomically deactivates active pointer and historical session", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const res = await stopAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.sessionId, activeSessionId);
+
+      // Check active pointer
+      const pointerDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.strictEqual(pointerDoc.data().isActive, false);
+      assert.ok(pointerDoc.data().stoppedAt);
+
+      // Check historical doc
+      const histDoc = await db.collection("attendance_sessions").doc(activeSessionId).get();
+      assert.strictEqual(histDoc.data().isActive, false);
+      assert.ok(histDoc.data().stoppedAt);
+    });
+  });
+
+  // ─── 3. generateQrToken Tests ──────────────────────────────────────────────
 
   describe("generateQrToken", function () {
     it("rejects unauthenticated caller with unauthenticated error", async function () {
@@ -166,7 +259,7 @@ describe("Phase 3: QR Backend Cloud Functions", function () {
     });
   });
 
-  // ─── 2. validateQrToken Tests ──────────────────────────────────────────────
+  // ─── 4. validateQrToken Tests ──────────────────────────────────────────────
 
   describe("validateQrToken", function () {
     let validTokenId;
@@ -279,6 +372,37 @@ describe("Phase 3: QR Backend Cloud Functions", function () {
           tokenId: validTokenId,
           courseCode: COURSE_CODE,
           sessionId: "wrong-session-id"
+        }),
+        (err) => err.code === "invalid-argument"
+      );
+    });
+
+    it("REGRESSION TEST: rejects old token from a previous session after a new session starts", async function () {
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+
+      // Old token was issued for activeSessionId (Session 1).
+      // Now faculty starts Session 2:
+      const newSession = await startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      const newSessionId = newSession.sessionId;
+
+      // Case A: Student attempts to validate old token with newSessionId
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: validTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: newSessionId
+        }),
+        (err) => err.code === "invalid-argument"
+      );
+
+      // Case B: Student attempts to validate old token with old activeSessionId
+      // (The active pointer in sessions/{courseCode} has moved to newSessionId!)
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: validTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
         }),
         (err) => err.code === "invalid-argument"
       );
