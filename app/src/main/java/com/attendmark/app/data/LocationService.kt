@@ -34,7 +34,7 @@ data class ClassroomLocation(
 ) {
     val isValid: Boolean get() {
         if (!isConfigured || latitude == null || longitude == null) return false
-        if (latitude.isNaN() || longitude.isNaN()) return false
+        if (latitude.isNaN() || longitude.isNaN() || geofenceRadiusMeters.isNaN() || geofenceRadiusMeters <= 0f) return false
         if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) return false
         if (Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001) return false
         return true
@@ -96,6 +96,79 @@ class LocationService(private val context: Context) {
         }
 
         /**
+         * Core decision logic for proximity evaluation given measured distance,
+         * reported horizontal accuracy, and configured geofence radius.
+         *
+         * Mathematical interval / circle classification:
+         * - If d + a <= r -> PASSED (confidently inside geofence)
+         * - If d - a > r -> OUTSIDE_GEOFENCE (confidently outside geofence)
+         * - Otherwise -> UNCERTAIN_ACCURACY (uncertainty circle overlaps geofence boundary)
+         *
+         * Rejects missing, negative, NaN, or infinite accuracy values with HARDWARE_OR_SIGNAL_ERROR.
+         */
+        fun evaluateProximity(
+            distanceMeters: Float,
+            accuracyMeters: Float?,
+            geofenceRadiusMeters: Float = DEFAULT_GEOFENCE_RADIUS_METERS
+        ): GpsEvaluationResult {
+            if (distanceMeters.isNaN() || distanceMeters < 0f || distanceMeters.isInfinite() ||
+                geofenceRadiusMeters.isNaN() || geofenceRadiusMeters <= 0f || geofenceRadiusMeters.isInfinite()
+            ) {
+                return GpsEvaluationResult(
+                    status = GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES,
+                    distanceMeters = -1f,
+                    accuracyMeters = -1f,
+                    errorMessage = "Invalid distance or geofence configuration."
+                )
+            }
+
+            // Reject / classify as unavailable (HARDWARE_OR_SIGNAL_ERROR) any missing, negative, NaN, or infinite accuracy values
+            if (accuracyMeters == null || accuracyMeters.isNaN() || accuracyMeters.isInfinite() || accuracyMeters < 0f) {
+                return GpsEvaluationResult(
+                    status = GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR,
+                    distanceMeters = distanceMeters,
+                    accuracyMeters = -1f,
+                    errorMessage = "GPS accuracy reported by device is invalid or unavailable."
+                )
+            }
+
+            val d = distanceMeters
+            val a = accuracyMeters
+            val r = geofenceRadiusMeters
+
+            return when {
+                // Entire uncertainty circle is within geofence: confidently inside
+                d + a <= r -> {
+                    GpsEvaluationResult(
+                        status = GpsVerificationStatus.PASSED,
+                        distanceMeters = d,
+                        accuracyMeters = a
+                    )
+                }
+
+                // Entire uncertainty circle is outside geofence: confidently outside
+                d - a > r -> {
+                    GpsEvaluationResult(
+                        status = GpsVerificationStatus.OUTSIDE_GEOFENCE,
+                        distanceMeters = d,
+                        accuracyMeters = a,
+                        errorMessage = "Location mismatch: You are ${d.toInt()}m from the classroom (outside permitted geofence of ${r.toInt()}m accounting for ±${a.toInt()}m accuracy)."
+                    )
+                }
+
+                // Uncertainty circle overlaps the geofence boundary
+                else -> {
+                    GpsEvaluationResult(
+                        status = GpsVerificationStatus.UNCERTAIN_ACCURACY,
+                        distanceMeters = d,
+                        accuracyMeters = a,
+                        errorMessage = "GPS position is uncertain: distance is ${d.toInt()}m with ±${a.toInt()}m accuracy for a ${r.toInt()}m geofence."
+                    )
+                }
+            }
+        }
+
+        /**
          * Evaluates proximity with explicit ClassroomLocation structure.
          */
         fun evaluateProximity(
@@ -114,6 +187,8 @@ class LocationService(private val context: Context) {
                         "Classroom coordinates (${classroomLocation.latitude}, ${classroomLocation.longitude}) exceed valid geographic bounds."
                     Math.abs(classroomLocation.latitude) < 0.000001 && Math.abs(classroomLocation.longitude) < 0.000001 ->
                         "Classroom coordinates cannot be unset (0.0, 0.0) or missing."
+                    classroomLocation.geofenceRadiusMeters.isNaN() || classroomLocation.geofenceRadiusMeters <= 0f ->
+                        "Geofence radius must be a positive number."
                     else -> "Classroom location is invalid."
                 }
                 return GpsEvaluationResult(
@@ -124,6 +199,15 @@ class LocationService(private val context: Context) {
                 )
             }
 
+            if (latitude.isNaN() || longitude.isNaN() || latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
+                return GpsEvaluationResult(
+                    status = GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR,
+                    distanceMeters = -1f,
+                    accuracyMeters = -1f,
+                    errorMessage = "Device GPS coordinates are invalid or out of bounds."
+                )
+            }
+
             val distance = calculateDistance(
                 latitude,
                 longitude,
@@ -131,38 +215,11 @@ class LocationService(private val context: Context) {
                 classroomLocation.longitude!!
             )
 
-            val accuracy = accuracyMeters ?: 0f
-
-            return when {
-                // Clearly outside geofence
-                distance > classroomLocation.geofenceRadiusMeters -> {
-                    GpsEvaluationResult(
-                        status = GpsVerificationStatus.OUTSIDE_GEOFENCE,
-                        distanceMeters = distance,
-                        accuracyMeters = accuracy,
-                        errorMessage = "Location mismatch: You are ${distance.toInt()}m from the classroom (max allowed: ${classroomLocation.geofenceRadiusMeters.toInt()}m)."
-                    )
-                }
-
-                // Inside distance boundary, but GPS signal has poor accuracy (> 50m uncertainty)
-                accuracy > MAX_ACCEPTABLE_ACCURACY_METERS -> {
-                    GpsEvaluationResult(
-                        status = GpsVerificationStatus.UNCERTAIN_ACCURACY,
-                        distanceMeters = distance,
-                        accuracyMeters = accuracy,
-                        errorMessage = "Low GPS accuracy (±${accuracy.toInt()}m). Proximity cannot be verified with certainty."
-                    )
-                }
-
-                // Confirmed within geofence with good accuracy
-                else -> {
-                    GpsEvaluationResult(
-                        status = GpsVerificationStatus.PASSED,
-                        distanceMeters = distance,
-                        accuracyMeters = accuracy
-                    )
-                }
-            }
+            return evaluateProximity(
+                distanceMeters = distance,
+                accuracyMeters = accuracyMeters,
+                geofenceRadiusMeters = classroomLocation.geofenceRadiusMeters
+            )
         }
 
         /**
@@ -220,16 +277,25 @@ class LocationService(private val context: Context) {
                 return evaluateProximity(0.0, 0.0, null, classroomLocation)
             }
 
+            if (locationError != null && locationError.isNotBlank()) {
+                return GpsEvaluationResult(
+                    status = GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR,
+                    distanceMeters = -1f,
+                    accuracyMeters = -1f,
+                    errorMessage = locationError
+                )
+            }
+
             if (location == null) {
                 return GpsEvaluationResult(
                     status = GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR,
                     distanceMeters = -1f,
                     accuracyMeters = -1f,
-                    errorMessage = locationError ?: "Could not determine GPS coordinates. Ensure Location is enabled."
+                    errorMessage = "Could not determine GPS coordinates. Ensure Location is enabled."
                 )
             }
 
-            val accuracy = if (location.hasAccuracy()) location.accuracy else null
+            val accuracy = if (location.hasAccuracy() || location.accuracy > 0f) location.accuracy else null
 
             return evaluateProximity(
                 latitude = location.latitude,
