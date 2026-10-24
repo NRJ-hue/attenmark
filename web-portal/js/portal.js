@@ -316,6 +316,8 @@ async function openCourseSession(course) {
       activeSession = {
         sessionId: data.sessionId,
         courseCode: course.classCode,
+        latitude: data.latitude,
+        longitude: data.longitude,
         expiresAt: data.expiresAt,
         startedAt: data.startedAt,
         isActive: true
@@ -352,25 +354,58 @@ btnUseCurrentLocation.addEventListener("click", () => {
     (pos) => {
       sessionLatInput.value = pos.coords.latitude.toFixed(6);
       sessionLonInput.value = pos.coords.longitude.toFixed(6);
+      updateLocationBadge();
       btnUseCurrentLocation.textContent = "✅ Location detected";
       setTimeout(() => (btnUseCurrentLocation.textContent = "📍 Detect & Use My Laptop Location"), 2500);
     },
     (err) => {
       btnUseCurrentLocation.textContent = "📍 Detect & Use My Laptop Location";
-      showAlert(startSessionAlert, "Could not fetch GPS: " + err.message + ". You may enter coordinates manually.", "info");
+      updateLocationBadge();
+      showAlert(startSessionAlert, "Could not fetch GPS: " + err.message + ". You must enter valid classroom coordinates manually before starting.", "danger");
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
 });
 
+function updateLocationBadge() {
+  const badge = document.getElementById("location-status-badge");
+  if (!badge) return;
+  const lat = parseFloat(sessionLatInput.value);
+  const lon = parseFloat(sessionLonInput.value);
+  if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && !(lat === 0 && lon === 0)) {
+    badge.textContent = `✅ Configured (Lat: ${lat.toFixed(5)}, Lon: ${lon.toFixed(5)})`;
+    badge.style.color = "#4ade80";
+  } else {
+    badge.textContent = "Not configured";
+    badge.style.color = "#f87171";
+  }
+}
+
+sessionLatInput.addEventListener("input", updateLocationBadge);
+sessionLonInput.addEventListener("input", updateLocationBadge);
+
 btnStartSession.addEventListener("click", async () => {
   hideAlert(startSessionAlert);
-  btnStartSession.disabled = true;
-  btnStartSession.textContent = "Starting Session...";
 
   const durationMinutes = parseInt(sessionDurationSelect.value, 10) || 10;
-  const latitude = parseFloat(sessionLatInput.value) || 0.0;
-  const longitude = parseFloat(sessionLonInput.value) || 0.0;
+  const latStr = (sessionLatInput.value || "").trim();
+  const lonStr = (sessionLonInput.value || "").trim();
+
+  if (!latStr || !lonStr) {
+    showAlert(startSessionAlert, "Cannot start attendance session: Classroom GPS coordinates are not configured. A valid physical location is required so student proximity can be verified against the 50m classroom geofence. Please click 'Detect & Use My Laptop Location' or enter your classroom's coordinates.", "danger");
+    return;
+  }
+
+  const latitude = parseFloat(latStr);
+  const longitude = parseFloat(lonStr);
+
+  if (isNaN(latitude) || isNaN(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || (latitude === 0 && longitude === 0)) {
+    showAlert(startSessionAlert, "Cannot start attendance session: Please enter valid non-zero classroom coordinates (Latitude [-90, 90], Longitude [-180, 180]).", "danger");
+    return;
+  }
+
+  btnStartSession.disabled = true;
+  btnStartSession.textContent = "Starting Session...";
 
   try {
     // Call backend Cloud Function for atomic session creation
@@ -385,6 +420,8 @@ btnStartSession.addEventListener("click", async () => {
     activeSession = {
       sessionId: res.data.sessionId,
       courseCode: currentCourse.classCode,
+      latitude: res.data.latitude || latitude,
+      longitude: res.data.longitude || longitude,
       expiresAt: res.data.expiresAt,
       startedAt: res.data.startedAt,
       isActive: true
@@ -404,6 +441,13 @@ btnStartSession.addEventListener("click", async () => {
         facultyEmail: currentFacultyUser.email,
         latitude,
         longitude,
+        locationConfigured: true,
+        location: {
+          latitude,
+          longitude,
+          geofenceRadiusMeters: 50,
+          configuredAt: startedAt
+        },
         isActive: true,
         durationMinutes,
         startedAt,
@@ -416,6 +460,8 @@ btnStartSession.addEventListener("click", async () => {
       activeSession = {
         sessionId,
         courseCode: currentCourse.classCode,
+        latitude,
+        longitude,
         expiresAt,
         startedAt,
         isActive: true
@@ -435,6 +481,14 @@ btnStartSession.addEventListener("click", async () => {
 function launchActiveSessionUI() {
   sessionSetupPanel.style.display = "none";
   sessionActivePanel.style.display = "grid";
+
+  // Display active geofence coordinates
+  const coordsEl = document.getElementById("active-session-coords");
+  if (coordsEl && activeSession) {
+    const lat = activeSession.latitude !== undefined && activeSession.latitude !== null ? Number(activeSession.latitude).toFixed(5) : null;
+    const lon = activeSession.longitude !== undefined && activeSession.longitude !== null ? Number(activeSession.longitude).toFixed(5) : null;
+    coordsEl.textContent = (lat && lon) ? `Lat: ${lat}, Lon: ${lon}` : "Configured";
+  }
 
   // Trigger immediate QR token generation
   refreshQrToken();

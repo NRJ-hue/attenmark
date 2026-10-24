@@ -28,18 +28,86 @@ class LocationServiceTest {
     }
 
     @Test
-    fun proximity_unconfiguredCoordinatesAlwaysPasses() {
-        val location = createMockLocation(0.0, 0.0)
+    fun proximity_missingOrUnsetCoordinatesFailsWithoutBypass() {
+        // P0: A missing or unset classroom location must never bypass verification or produce a successful result
         val result = LocationService.evaluateProximity(
-            location = location,
-            locationError = null,
+            latitude = classroomLat,
+            longitude = classroomLon,
+            accuracyMeters = 10f,
             classroomLat = 0.0,
             classroomLon = 0.0
         )
 
-        assertEquals(GpsVerificationStatus.NOT_CONFIGURED, result.status)
-        assertEquals(0f, result.distanceMeters)
-        assertNull(result.errorMessage)
+        assertEquals(GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES, result.status)
+        assertEquals(-1f, result.distanceMeters)
+        assertNotNull(result.errorMessage)
+        assertTrue(result.errorMessage?.contains("missing") == true || result.errorMessage?.contains("unset") == true)
+        assertFalse(result.isEligibleForRetry)
+    }
+
+    @Test
+    fun proximity_unconfiguredLocationFlagFailsWithoutBypass() {
+        // Location coordinates exist, but session has isConfigured = false
+        val studentLat = classroomLat + 0.00008
+        val studentLon = classroomLon
+        val result = LocationService.evaluateProximity(
+            latitude = studentLat,
+            longitude = studentLon,
+            accuracyMeters = 10f,
+            classroomLat = classroomLat,
+            classroomLon = classroomLon,
+            isConfigured = false
+        )
+
+        assertEquals(GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES, result.status)
+        assertEquals(-1f, result.distanceMeters)
+        assertNotNull(result.errorMessage)
+        assertTrue(result.errorMessage?.contains("not configured") == true)
+        assertFalse(result.isEligibleForRetry)
+    }
+
+    @Test
+    fun proximity_nullCoordinatesFailsWithoutBypass() {
+        // Classroom latitude and longitude are null
+        val result = LocationService.evaluateProximity(
+            location = null,
+            locationError = null,
+            classroomLat = null,
+            classroomLon = null
+        )
+
+        assertEquals(GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES, result.status)
+        assertEquals(-1f, result.distanceMeters)
+        assertNotNull(result.errorMessage)
+        assertTrue(result.errorMessage?.contains("not configured") == true)
+        assertFalse(result.isEligibleForRetry)
+    }
+
+    @Test
+    fun proximity_invalidCoordinatesFailsWithoutBypass() {
+        // P0: Out-of-range coordinates must be rejected
+        val resultOutOfRange = LocationService.evaluateProximity(
+            latitude = classroomLat,
+            longitude = classroomLon,
+            accuracyMeters = 10f,
+            classroomLat = 95.0,
+            classroomLon = -122.4194
+        )
+
+        assertEquals(GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES, resultOutOfRange.status)
+        assertEquals(-1f, resultOutOfRange.distanceMeters)
+
+        // NaN coordinates
+        val resultNaN = LocationService.evaluateProximity(
+            latitude = classroomLat,
+            longitude = classroomLon,
+            accuracyMeters = 10f,
+            classroomLat = Double.NaN,
+            classroomLon = classroomLon
+        )
+
+        assertEquals(GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES, resultNaN.status)
+        assertEquals(-1f, resultNaN.distanceMeters)
     }
 
     @Test

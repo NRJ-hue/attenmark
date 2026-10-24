@@ -246,14 +246,16 @@ fun AttendanceFlowScreen(
                                     val activeSession = withContext(Dispatchers.IO) {
                                         firestoreRepo.getSessionById(sessionId) ?: firestoreRepo.getActiveSession(courseCode)
                                     }
-                                    val facLat = (activeSession?.get("latitude") as? Number)?.toDouble() ?: 0.0
-                                    val facLon = (activeSession?.get("longitude") as? Number)?.toDouble() ?: 0.0
+                                    val facLat = (activeSession?.get("latitude") as? Number)?.toDouble()
+                                    val facLon = (activeSession?.get("longitude") as? Number)?.toDouble()
+                                    val isLocConfigured = activeSession?.get("locationConfigured") as? Boolean ?: (facLat != null && facLon != null)
 
                                     val gpsEval = LocationService.evaluateProximity(
                                         location = loc,
                                         locationError = locErr,
                                         classroomLat = facLat,
-                                        classroomLon = facLon
+                                        classroomLon = facLon,
+                                        isConfigured = isLocConfigured
                                     )
 
                                     // Calculate 100-point Overall Trust Score:
@@ -271,6 +273,8 @@ fun AttendanceFlowScreen(
                                     val isFaceMatchFailed = (matchResult == FaceRecognitionService.MatchResult.NO_MATCH || 
                                                              matchResult == FaceRecognitionService.MatchResult.WEAK_MATCH)
                                     val isGpsOutside = (gpsEval.status == GpsVerificationStatus.OUTSIDE_GEOFENCE)
+                                    val isGpsSignalError = (gpsEval.status == GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR)
+                                    val isClassroomLocationMissing = (gpsEval.status == GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES)
 
                                     val finalStatus: AttendanceStatus
                                     val finalRejectionReason: String?
@@ -291,6 +295,37 @@ fun AttendanceFlowScreen(
 
                                             failureTitle = "Outside Classroom Geofence"
                                             failureDetails = "Your GPS location is outside the permitted classroom area. Location violations cannot be retried."
+                                            isRetryEligible = false
+                                        }
+
+                                        isGpsSignalError -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = gpsEval.errorMessage ?: "GPS signal unavailable."
+
+                                            val failResult = withContext(Dispatchers.IO) {
+                                                qrValidationService.recordAttemptFailure(
+                                                    sessionId = sessionId,
+                                                    courseCode = courseCode,
+                                                    failureReason = "GPS_SIGNAL_ERROR"
+                                                )
+                                            }
+
+                                            val eligible = failResult.getOrNull()?.get("retryEligible") as? Boolean ?: false
+                                            failureTitle = "Location Signal Required"
+                                            failureDetails = if (eligible) {
+                                                "Could not determine your GPS location. Please turn on Location/GPS and try again. You have 1 retry remaining."
+                                            } else {
+                                                "Could not determine your GPS location. Maximum attempts reached for this session."
+                                            }
+                                            isRetryEligible = eligible
+                                        }
+
+                                        isClassroomLocationMissing -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = gpsEval.errorMessage ?: "Classroom location not configured."
+
+                                            failureTitle = "Classroom Location Unavailable"
+                                            failureDetails = "This session does not have valid classroom GPS coordinates configured. Attendance cannot be verified automatically. Please contact your instructor."
                                             isRetryEligible = false
                                         }
 
@@ -330,7 +365,7 @@ fun AttendanceFlowScreen(
                                     }
 
                                     // If this was an eligible failure or non-retryable rejection, show failure UI
-                                    if (isFaceMatchFailed || isGpsOutside) {
+                                    if (isFaceMatchFailed || isGpsOutside || isGpsSignalError || isClassroomLocationMissing) {
                                         currentStep = AttendanceFlowStep.FAILED_ATTEMPT
                                         // Still persist the rejection record for faculty audit trail
                                         val currentUid = if (userUid.isNotBlank()) userUid

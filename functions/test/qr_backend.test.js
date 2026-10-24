@@ -118,7 +118,7 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
     it("rejects student caller attempting to start session", async function () {
       const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
       await assert.rejects(
-        startAttendanceSessionCore(db, studentAuth, { courseCode: COURSE_CODE }),
+        startAttendanceSessionCore(db, studentAuth, { courseCode: COURSE_CODE, latitude: 37.7749, longitude: -122.4194 }),
         (err) => err.code === "permission-denied"
       );
     });
@@ -126,16 +126,60 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
     it("rejects faculty not assigned to this course", async function () {
       const otherAuth = { uid: OTHER_FACULTY_UID, email: OTHER_FACULTY_EMAIL };
       await assert.rejects(
-        startAttendanceSessionCore(db, otherAuth, { courseCode: COURSE_CODE }),
+        startAttendanceSessionCore(db, otherAuth, { courseCode: COURSE_CODE, latitude: 37.7749, longitude: -122.4194 }),
         (err) => err.code === "permission-denied"
       );
+    });
+
+    it("rejects session start when classroom coordinates are missing", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE, durationMinutes: 10 }),
+        (err) => err.code === "invalid-argument" && err.message.includes("latitude and longitude are required")
+      );
+    });
+
+    it("rejects session start when classroom coordinates are unset (0.0, 0.0)", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE, durationMinutes: 10, latitude: 0.0, longitude: 0.0 }),
+        (err) => err.code === "invalid-argument" && err.message.includes("cannot be unset")
+      );
+    });
+
+    it("rejects session start when classroom coordinates are out of valid range", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      await assert.rejects(
+        startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE, durationMinutes: 10, latitude: 95.0, longitude: -122.4194 }),
+        (err) => err.code === "invalid-argument" && err.message.includes("out of valid range")
+      );
+    });
+
+    it("supports explicit location object { latitude, longitude } and verifies locationConfigured presence", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const res = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        durationMinutes: 10,
+        location: {
+          latitude: 37.7749,
+          longitude: -122.4194
+        }
+      });
+      assert.ok(res.sessionId);
+      assert.strictEqual(res.locationConfigured, true);
+      const histDoc = await db.collection("attendance_sessions").doc(res.sessionId).get();
+      assert.strictEqual(histDoc.data().locationConfigured, true);
+      assert.strictEqual(histDoc.data().location.geofenceRadiusMeters, 50);
+      assert.strictEqual(histDoc.data().latitude, 37.7749);
     });
 
     it("creates unique session ID and writes both historical and active pointer", async function () {
       const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
       const res = await startAttendanceSessionCore(db, facultyAuth, {
         courseCode: COURSE_CODE,
-        durationMinutes: 15
+        durationMinutes: 15,
+        latitude: 37.7749,
+        longitude: -122.4194
       });
 
       assert.ok(res.sessionId);
@@ -384,7 +428,11 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
 
       // Old token was issued for activeSessionId (Session 1).
       // Now faculty starts Session 2:
-      const newSession = await startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      const newSession = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        latitude: 37.7749,
+        longitude: -122.4194
+      });
       const newSessionId = newSession.sessionId;
 
       // Case A: Student attempts to validate old token with newSessionId

@@ -27,8 +27,31 @@ async function startAttendanceSessionCore(db, authContext, data) {
 
   const { courseCode } = data;
   const durationMinutes = Number(data.durationMinutes) > 0 ? Number(data.durationMinutes) : 10;
-  const latitude = typeof data.latitude === "number" ? data.latitude : 0.0;
-  const longitude = typeof data.longitude === "number" ? data.longitude : 0.0;
+
+  // Strict classroom coordinate & location presence validation
+  // Requires explicit location configuration and validates geographic bounds
+  const rawLat = data.location && data.location.latitude !== undefined ? data.location.latitude : data.latitude;
+  const rawLon = data.location && data.location.longitude !== undefined ? data.location.longitude : data.longitude;
+
+  if (rawLat === undefined || rawLat === null || rawLon === undefined || rawLon === null || rawLat === "" || rawLon === "") {
+    throw new ServiceError("invalid-argument", "Classroom latitude and longitude are required to start an attendance session.");
+  }
+
+  const latitude = typeof rawLat === "number" ? rawLat : Number(rawLat);
+  const longitude = typeof rawLon === "number" ? rawLon : Number(rawLon);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new ServiceError("invalid-argument", "Classroom coordinates must be valid numbers.");
+  }
+
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    throw new ServiceError("invalid-argument", "Classroom coordinates out of valid range (latitude [-90, 90], longitude [-180, 180]).");
+  }
+
+  // Reject unset coordinates / Null Island (0.0, 0.0)
+  if (Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001) {
+    throw new ServiceError("invalid-argument", "Classroom coordinates cannot be unset (0.0, 0.0).");
+  }
 
   // Verify faculty role
   const userDoc = await db.collection("users").doc(authContext.uid).get();
@@ -61,6 +84,13 @@ async function startAttendanceSessionCore(db, authContext, data) {
     facultyEmail,
     latitude,
     longitude,
+    locationConfigured: true,
+    location: {
+      latitude,
+      longitude,
+      geofenceRadiusMeters: 50,
+      configuredAt: startedAt
+    },
     isActive: true,
     durationMinutes,
     startedAt,
@@ -84,7 +114,10 @@ async function startAttendanceSessionCore(db, authContext, data) {
     courseCode,
     startedAt,
     expiresAt,
-    durationMinutes
+    durationMinutes,
+    latitude,
+    longitude,
+    locationConfigured: true
   };
 }
 

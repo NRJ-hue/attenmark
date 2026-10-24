@@ -105,7 +105,7 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
     it("DENIES faculty from managing a course owned by another faculty", async function () {
       const unauthorizedFacultyAuth = { uid: OTHER_FACULTY_UID, email: OTHER_FACULTY_EMAIL };
       await assert.rejects(
-        startAttendanceSessionCore(db, unauthorizedFacultyAuth, { courseCode: COURSE_CODE }),
+        startAttendanceSessionCore(db, unauthorizedFacultyAuth, { courseCode: COURSE_CODE, latitude: 37.7749, longitude: -122.4194 }),
         (err) => err.code === "permission-denied"
       );
     });
@@ -120,7 +120,9 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       // Session 1
       const session1 = await startAttendanceSessionCore(db, facultyAuth, {
         courseCode: COURSE_CODE,
-        durationMinutes: 10
+        durationMinutes: 10,
+        latitude: 37.7749,
+        longitude: -122.4194
       });
 
       // Stop Session 1
@@ -129,7 +131,9 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       // Session 2
       const session2 = await startAttendanceSessionCore(db, facultyAuth, {
         courseCode: COURSE_CODE,
-        durationMinutes: 15
+        durationMinutes: 15,
+        latitude: 37.7749,
+        longitude: -122.4194
       });
 
       assert.notStrictEqual(session1.sessionId, session2.sessionId);
@@ -161,7 +165,9 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
       const session = await startAttendanceSessionCore(db, facultyAuth, {
         courseCode: COURSE_CODE,
-        durationMinutes: 10
+        durationMinutes: 10,
+        latitude: 37.7749,
+        longitude: -122.4194
       });
 
       // Token 1
@@ -203,7 +209,11 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
 
       // Session A
-      const sessionA = await startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      const sessionA = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        latitude: 37.7749,
+        longitude: -122.4194
+      });
       const recordA = {
         sessionId: sessionA.sessionId,
         studentUid: STUDENT_1_UID,
@@ -218,7 +228,11 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       await stopAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
 
       // Session B (Active Session)
-      const sessionB = await startAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      const sessionB = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        latitude: 37.7749,
+        longitude: -122.4194
+      });
 
       // Student 1 submits valid claim in Session B
       const tokenB = await generateQrTokenCore(db, facultyAuth, { courseCode: COURSE_CODE });
