@@ -7,6 +7,8 @@ import {
   functions,
   callBackendApi,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
   signOut,
   onAuthStateChanged,
   doc,
@@ -45,11 +47,30 @@ const loginView = document.getElementById("login-view");
 const dashboardView = document.getElementById("dashboard-view");
 const sessionView = document.getElementById("session-view");
 
+const authHeaderTitle = document.getElementById("auth-header-title");
+const authHeaderSubtitle = document.getElementById("auth-header-subtitle");
+const tabAuthLogin = document.getElementById("tab-auth-login");
+const tabAuthRegister = document.getElementById("tab-auth-register");
+const loginAlert = document.getElementById("login-alert");
+
+const bootstrapRetryContainer = document.getElementById("bootstrap-retry-container");
+const bootstrapRetryMessage = document.getElementById("bootstrap-retry-message");
+const btnRetryBootstrap = document.getElementById("btn-retry-bootstrap");
+const btnCancelBootstrap = document.getElementById("btn-cancel-bootstrap");
+
 const loginForm = document.getElementById("login-form");
 const loginEmail = document.getElementById("login-email");
 const loginPassword = document.getElementById("login-password");
-const loginAlert = document.getElementById("login-alert");
 const btnLoginSubmit = document.getElementById("btn-login-submit");
+const linkGoToRegister = document.getElementById("link-go-to-register");
+
+const registerForm = document.getElementById("register-form");
+const registerName = document.getElementById("register-name");
+const registerEmail = document.getElementById("register-email");
+const registerPassword = document.getElementById("register-password");
+const registerPasswordConfirm = document.getElementById("register-password-confirm");
+const btnRegisterSubmit = document.getElementById("btn-register-submit");
+const linkGoToLogin = document.getElementById("link-go-to-login");
 
 const facultyProfile = document.getElementById("faculty-profile");
 const facultyDisplayName = document.getElementById("faculty-display-name");
@@ -122,31 +143,115 @@ function hideAlert(element) {
   element.style.display = "none";
 }
 
-// ─── 1. Authentication Lifecycle ──────────────────────────────────────────────
-onAuthStateChanged(auth, async (user) => {
-  if (user) {
+// ─── 1. Authentication Lifecycle & Profile Initialization ──────────────────────
+let pendingDisplayName = null;
+let isBootstrappingProfile = false;
+
+function formatAuthError(err, context = "login") {
+  const code = err ? (err.code || "") : "";
+  const msg = err ? (err.message || "") : "";
+
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "An account with this email address already exists. Please switch to the Sign In tab.";
+    case "auth/invalid-email":
+      return "Please enter a valid email address.";
+    case "auth/weak-password":
+      return "Password is too weak. Please use at least 6 characters.";
+    case "auth/user-not-found":
+      return "No account found with this email. If you are a new faculty member, please register using the Register tab.";
+    case "auth/wrong-password":
+      return "Incorrect password. Please verify your credentials and try again.";
+    case "auth/invalid-credential":
+      return context === "login"
+        ? "Invalid email or password. If you haven't created a faculty account yet, please register."
+        : "Invalid registration credentials. Please check your email and password.";
+    case "auth/operation-not-allowed":
+      return "Email/Password sign-in is disabled in Firebase Authentication. Please enable Email/Password provider in the Firebase Console.";
+    case "auth/network-request-failed":
+      return isLocal
+        ? "Network error: Unable to connect to Firebase Auth emulator (port 9099). Ensure emulators are running."
+        : "Network error: Unable to reach the authentication service. Please check your internet connection.";
+    case "auth/too-many-requests":
+      return "Too many unsuccessful attempts. Access temporarily disabled. Please wait a few moments and try again.";
+    case "auth/user-disabled":
+      return "This account has been disabled by an administrator.";
+    default:
+      return msg || (context === "login" ? "Sign in failed. Please check your credentials." : "Registration failed. Please try again.");
+  }
+}
+
+function setAuthMode(mode) {
+  hideAlert(loginAlert);
+  if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+
+  if (mode === "register") {
+    if (tabAuthLogin) {
+      tabAuthLogin.classList.remove("active");
+      tabAuthLogin.setAttribute("aria-selected", "false");
+    }
+    if (tabAuthRegister) {
+      tabAuthRegister.classList.add("active");
+      tabAuthRegister.setAttribute("aria-selected", "true");
+    }
+
+    if (loginForm) loginForm.style.display = "none";
+    if (registerForm) registerForm.style.display = "block";
+
+    if (authHeaderTitle) authHeaderTitle.textContent = "Faculty Registration";
+    if (authHeaderSubtitle) authHeaderSubtitle.textContent = "Create a new faculty account for AttendIQ";
+  } else {
+    if (tabAuthRegister) {
+      tabAuthRegister.classList.remove("active");
+      tabAuthRegister.setAttribute("aria-selected", "false");
+    }
+    if (tabAuthLogin) {
+      tabAuthLogin.classList.add("active");
+      tabAuthLogin.setAttribute("aria-selected", "true");
+    }
+
+    if (registerForm) registerForm.style.display = "none";
+    if (loginForm) loginForm.style.display = "block";
+
+    if (authHeaderTitle) authHeaderTitle.textContent = "Faculty Sign In";
+    if (authHeaderSubtitle) authHeaderSubtitle.textContent = "Multi-Factor In-App QR Attendance System";
+  }
+}
+
+async function initUserProfile(user, preferredName = null) {
+  if (!user) return;
+  if (isBootstrappingProfile) return;
+  isBootstrappingProfile = true;
+
+  if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+  showAlert(loginAlert, "Verifying faculty credentials and initializing profile...", "info");
+
+  try {
+    if (emulatorStatusEl) {
+      emulatorStatusEl.textContent = isLocal ? "● Local Emulator Mode" : "● Cloud Production Mode";
+    }
+
+    let userRole = null;
+    let userName = preferredName || user.displayName;
+    let apiError = null;
+
+    // Call backend bootstrap-profile
     try {
-      if (emulatorStatusEl) {
-        emulatorStatusEl.textContent = isLocal ? "● Local Emulator Mode" : "● Cloud Production Mode";
+      const bootstrapRes = await callBackendApi("bootstrap-profile", {
+        name: userName || user.email.split("@")[0]
+      });
+      if (bootstrapRes && bootstrapRes.data) {
+        userRole = bootstrapRes.data.role;
+        userName = bootstrapRes.data.name || userName;
       }
+    } catch (err) {
+      apiError = err;
+      console.warn("Backend bootstrap-profile call failed:", err.message);
+    }
 
-      // Authoritative profile check via backend API with Firestore fallback
-      let userRole = null;
-      let userName = user.displayName;
-
+    // Direct Firestore fallback read (only if profile was already created earlier)
+    if (!userRole) {
       try {
-        const bootstrapRes = await callBackendApi("bootstrap-profile", {
-          name: user.displayName || user.email.split("@")[0]
-        });
-        if (bootstrapRes && bootstrapRes.data) {
-          userRole = bootstrapRes.data.role;
-          userName = bootstrapRes.data.name || userName;
-        }
-      } catch (apiErr) {
-        console.warn("Notice: Backend bootstrap check fell back to direct Firestore read:", apiErr.message);
-      }
-
-      if (!userRole) {
         const userDocRef = doc(db, "users", user.uid);
         const userSnap = await getDoc(userDocRef);
         if (userSnap.exists()) {
@@ -154,48 +259,90 @@ onAuthStateChanged(auth, async (user) => {
           userRole = uData.role;
           userName = uData.name || userName;
         }
+      } catch (fsErr) {
+        console.warn("Direct Firestore read fallback failed:", fsErr.message);
       }
-
-      if (userRole !== "faculty") {
-        await signOut(auth);
-        showAlert(loginAlert, "Access Denied: Only verified faculty accounts are permitted to enter this portal.", "error");
-        switchView("login");
-        return;
-      }
-
-      currentFacultyUser = {
-        uid: user.uid,
-        email: user.email,
-        name: userName || user.displayName || user.email.split("@")[0],
-        role: "faculty"
-      };
-
-      facultyDisplayName.textContent = currentFacultyUser.name;
-      facultyDisplayEmail.textContent = currentFacultyUser.email;
-      facultyProfile.style.display = "flex";
-      btnLogout.style.display = "inline-flex";
-
-      switchView("dashboard");
-      listenToFacultyCourses();
-    } catch (err) {
-      console.error("Error verifying faculty profile:", err);
-      showAlert(loginAlert, "Failed to verify faculty permissions: " + err.message, "error");
-      await signOut(auth);
-      switchView("login");
     }
+
+    // Case 1: Bootstrap failed and profile does not exist yet
+    if (!userRole) {
+      const detailMsg = apiError ? apiError.message : "Unable to reach profile service.";
+      showAlert(
+        loginAlert,
+        `Account authenticated, but profile setup failed: ${detailMsg} Click "Retry Setup" to try again.`,
+        "error"
+      );
+      if (bootstrapRetryContainer) {
+        bootstrapRetryContainer.style.display = "block";
+        if (bootstrapRetryMessage) {
+          bootstrapRetryMessage.textContent = `Setup failed for ${user.email} (${detailMsg}). Your credentials are valid.`;
+        }
+      }
+      isBootstrappingProfile = false;
+      return;
+    }
+
+    // Case 2: Role is NOT faculty (first 2 characters digits -> student)
+    if (userRole !== "faculty") {
+      await signOut(auth);
+      showAlert(
+        loginAlert,
+        `Access Denied: Account (${user.email}) is classified as a ${userRole}. Only faculty accounts can access this portal. Student accounts must use the AttendIQ Android app.`,
+        "error"
+      );
+      if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+      switchView("login");
+      isBootstrappingProfile = false;
+      return;
+    }
+
+    // Case 3: Valid faculty account!
+    hideAlert(loginAlert);
+    if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+
+    currentFacultyUser = {
+      uid: user.uid,
+      email: user.email,
+      name: userName || user.displayName || user.email.split("@")[0],
+      role: "faculty"
+    };
+
+    facultyDisplayName.textContent = currentFacultyUser.name;
+    facultyDisplayEmail.textContent = currentFacultyUser.email;
+    facultyProfile.style.display = "flex";
+    btnLogout.style.display = "inline-flex";
+
+    switchView("dashboard");
+    listenToFacultyCourses();
+  } catch (err) {
+    console.error("Error during profile initialization:", err);
+    showAlert(loginAlert, "Failed to verify faculty permissions: " + err.message, "error");
+    if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "block";
+  } finally {
+    isBootstrappingProfile = false;
+    pendingDisplayName = null;
+  }
+}
+
+onAuthStateChanged(auth, async (user) => {
+  if (user) {
+    await initUserProfile(user, pendingDisplayName);
   } else {
     currentFacultyUser = null;
     facultyProfile.style.display = "none";
     btnLogout.style.display = "none";
     cleanUpActiveSession();
     if (coursesUnsubscribe) coursesUnsubscribe();
+    if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
     switchView("login");
   }
 });
 
+// Sign In Form Submission
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   hideAlert(loginAlert);
+  if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
 
   const email = loginEmail.value.trim();
   const password = loginPassword.value;
@@ -212,16 +359,84 @@ loginForm.addEventListener("submit", async (e) => {
     await signInWithEmailAndPassword(auth, email, password);
   } catch (err) {
     console.error("Login failed:", err);
-    let msg = "Invalid email or password.";
-    if (err.code === "auth/network-request-failed") {
-      msg = "Network error: Ensure the Firebase Auth emulator is running on port 9099.";
-    }
-    showAlert(loginAlert, msg, "error");
+    showAlert(loginAlert, formatAuthError(err, "login"), "error");
   } finally {
     btnLoginSubmit.disabled = false;
     btnLoginSubmit.textContent = "Sign In to Faculty Portal";
   }
 });
+
+// Registration Form Submission
+if (registerForm) {
+  registerForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    hideAlert(loginAlert);
+    if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+
+    const name = registerName ? registerName.value.trim() : "";
+    const email = registerEmail ? registerEmail.value.trim() : "";
+    const password = registerPassword ? registerPassword.value : "";
+    const passwordConfirm = registerPasswordConfirm ? registerPasswordConfirm.value : "";
+
+    if (!email || !password) {
+      showAlert(loginAlert, "Please enter email and password.", "error");
+      return;
+    }
+
+    if (password.length < 6) {
+      showAlert(loginAlert, "Password must be at least 6 characters long.", "error");
+      return;
+    }
+
+    if (password !== passwordConfirm) {
+      showAlert(loginAlert, "Passwords do not match. Please re-enter your password.", "error");
+      return;
+    }
+
+    btnRegisterSubmit.disabled = true;
+    btnRegisterSubmit.textContent = "Creating Account...";
+    pendingDisplayName = name.length > 0 ? name : null;
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      if (pendingDisplayName && cred.user) {
+        await updateProfile(cred.user, { displayName: pendingDisplayName }).catch(() => {});
+      }
+      // onAuthStateChanged takes over to bootstrap profile and transition to dashboard
+    } catch (err) {
+      console.error("Registration failed:", err);
+      pendingDisplayName = null;
+      showAlert(loginAlert, formatAuthError(err, "register"), "error");
+    } finally {
+      btnRegisterSubmit.disabled = false;
+      btnRegisterSubmit.textContent = "Create Faculty Account";
+    }
+  });
+}
+
+// Tab and Toggle Event Listeners
+if (tabAuthLogin) tabAuthLogin.addEventListener("click", () => setAuthMode("login"));
+if (tabAuthRegister) tabAuthRegister.addEventListener("click", () => setAuthMode("register"));
+if (linkGoToRegister) linkGoToRegister.addEventListener("click", () => setAuthMode("register"));
+if (linkGoToLogin) linkGoToLogin.addEventListener("click", () => setAuthMode("login"));
+
+if (btnRetryBootstrap) {
+  btnRetryBootstrap.addEventListener("click", async () => {
+    if (auth.currentUser) {
+      await initUserProfile(auth.currentUser);
+    } else {
+      setAuthMode("login");
+    }
+  });
+}
+
+if (btnCancelBootstrap) {
+  btnCancelBootstrap.addEventListener("click", async () => {
+    if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
+    hideAlert(loginAlert);
+    await signOut(auth);
+  });
+}
 
 btnLogout.addEventListener("click", async () => {
   cleanUpActiveSession();

@@ -628,3 +628,65 @@ describe("Security Fix F — Production Backend URL and Emulator Isolation", fun
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G. Faculty Portal Registration and Authentication UI Integration
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Security Fix G — Faculty Portal Registration and Authentication UI Integration", function () {
+  const fs = require("fs");
+  const path = require("path");
+  const configPath = path.resolve(__dirname, "../../web-portal/js/firebase-config.js");
+  const indexPath = path.resolve(__dirname, "../../web-portal/index.html");
+  const portalPath = path.resolve(__dirname, "../../web-portal/js/portal.js");
+
+  it("firebase-config.js imports and exports createUserWithEmailAndPassword and updateProfile", function () {
+    const content = fs.readFileSync(configPath, "utf8");
+    assert.ok(
+      content.includes("createUserWithEmailAndPassword"),
+      "firebase-config.js must import and export createUserWithEmailAndPassword"
+    );
+    assert.ok(
+      content.includes("updateProfile"),
+      "firebase-config.js must import and export updateProfile"
+    );
+  });
+
+  it("index.html defines both sign-in and registration forms with tabs and recovery container", function () {
+    const content = fs.readFileSync(indexPath, "utf8");
+    assert.ok(content.includes('id="login-form"'), "index.html must define login-form");
+    assert.ok(content.includes('id="register-form"'), "index.html must define register-form");
+    assert.ok(content.includes('id="tab-auth-login"'), "index.html must define tab-auth-login");
+    assert.ok(content.includes('id="tab-auth-register"'), "index.html must define tab-auth-register");
+    assert.ok(content.includes('id="bootstrap-retry-container"'), "index.html must define bootstrap-retry-container");
+    assert.ok(content.includes('id="btn-retry-bootstrap"'), "index.html must define btn-retry-bootstrap");
+    assert.ok(content.includes('id="btn-register-submit"'), "index.html must define btn-register-submit");
+  });
+
+  it("portal.js wires registration, tab switching, and error handling", function () {
+    const content = fs.readFileSync(portalPath, "utf8");
+    assert.ok(
+      content.includes("createUserWithEmailAndPassword"),
+      "portal.js must invoke createUserWithEmailAndPassword on registration submit"
+    );
+    assert.ok(
+      content.includes("formatAuthError"),
+      "portal.js must define formatAuthError to map Firebase Auth error codes"
+    );
+    assert.ok(
+      content.includes("auth/email-already-in-use"),
+      "portal.js must handle auth/email-already-in-use"
+    );
+    assert.ok(
+      content.includes("auth/weak-password"),
+      "portal.js must handle auth/weak-password"
+    );
+    assert.ok(
+      content.includes("auth/invalid-credential"),
+      "portal.js must handle auth/invalid-credential"
+    );
+    assert.ok(
+      content.includes("initUserProfile"),
+      "portal.js must define initUserProfile with backend bootstrap and recovery"
+    );
+  });
+});

@@ -35,16 +35,38 @@
       <div class="login-card">
         <div class="login-header">
           <div style="font-size: 3rem;">👨‍🏫</div>
-          <h2>Faculty Sign In</h2>
-          <p>Multi-Factor In-App QR Attendance System</p>
+          <h2 id="auth-header-title">Faculty Portal</h2>
+          <p id="auth-header-subtitle">Sign in or register a new faculty account</p>
+        </div>
+
+        <!-- Auth Tabs: Sign In / Register -->
+        <div class="auth-tabs" role="tablist">
+          <button type="button" id="tab-auth-login" class="auth-tab-btn active" role="tab" aria-selected="true">
+            Sign In
+          </button>
+          <button type="button" id="tab-auth-register" class="auth-tab-btn" role="tab" aria-selected="false">
+            Register New Faculty
+          </button>
         </div>
 
         <div id="login-alert" class="alert-banner"></div>
 
+        <!-- Bootstrap Error & Recovery Container -->
+        <div id="bootstrap-retry-container" class="bootstrap-recovery" style="display: none;">
+          <p id="bootstrap-retry-message" style="margin-bottom: 0.75rem; font-size: 0.85rem; color: var(--text-muted); text-align: center;">
+            Authentication succeeded, but profile setup could not be completed.
+          </p>
+          <div style="display: flex; gap: 0.5rem; justify-content: center;">
+            <button type="button" id="btn-retry-bootstrap" class="btn btn-primary btn-sm">Retry Setup</button>
+            <button type="button" id="btn-cancel-bootstrap" class="btn btn-outline btn-sm">Sign Out</button>
+          </div>
+        </div>
+
+        <!-- 1. Sign In Form -->
         <form id="login-form">
           <div class="form-group">
             <label for="login-email">Faculty Email Address</label>
-            <input type="email" id="login-email" class="form-input" placeholder="faculty@test.com" required autocomplete="email">
+            <input type="email" id="login-email" class="form-input" placeholder="faculty@college.edu" required autocomplete="email">
           </div>
 
           <div class="form-group">
@@ -55,13 +77,52 @@
           <button type="submit" id="btn-login-submit" class="btn btn-primary" style="width: 100%; margin-top: 0.5rem;">
             Sign In to Faculty Portal
           </button>
+
+          <p class="auth-toggle-text">
+            Don't have a faculty account?
+            <button type="button" id="link-go-to-register" class="auth-toggle-link">Register here</button>
+          </p>
+        </form>
+
+        <!-- 2. Register Form -->
+        <form id="register-form" style="display: none;">
+          <div class="form-group">
+            <label for="register-name">Full Name / Title (Optional)</label>
+            <input type="text" id="register-name" class="form-input" placeholder="e.g. Prof. Alan Turing" autocomplete="name">
+          </div>
+
+          <div class="form-group">
+            <label for="register-email">Faculty Email Address</label>
+            <input type="email" id="register-email" class="form-input" placeholder="faculty@college.edu" required autocomplete="email">
+            <small style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem; display: block;">
+              Note: Email must not begin with two digits (digit prefixes are assigned student roles).
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="register-password">Password</label>
+            <input type="password" id="register-password" class="form-input" placeholder="•••••••• (min 6 characters)" required minlength="6" autocomplete="new-password">
+          </div>
+
+          <div class="form-group">
+            <label for="register-password-confirm">Confirm Password</label>
+            <input type="password" id="register-password-confirm" class="form-input" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+          </div>
+
+          <button type="submit" id="btn-register-submit" class="btn btn-primary" style="width: 100%; margin-top: 0.5rem;">
+            Create Faculty Account
+          </button>
+
+          <p class="auth-toggle-text">
+            Already have an account?
+            <button type="button" id="link-go-to-login" class="auth-toggle-link">Sign in here</button>
+          </p>
         </form>
 
         <div class="credentials-hint">
-          <strong>Demo Faculty Credentials:</strong><br>
-          Email: <code>faculty@test.com</code><br>
-          Password: <code>faculty123</code><br>
-          <em>(Student accounts are blocked from accessing this portal)</em>
+          <strong>Faculty Access:</strong><br>
+          Any faculty email beginning with letters (e.g. <code>fa...</code>, <code>prof...</code>, <code>faculty@...</code>) automatically receives faculty permissions.<br>
+          <em>(Student accounts with 2-digit prefixes are blocked from this portal)</em>
         </div>
       </div>
     </section>
