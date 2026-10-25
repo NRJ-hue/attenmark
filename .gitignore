@@ -24,3 +24,4 @@ java_pid*.hprof
 *.jar
 node_modules/
 functions/node_modules/
+*-debug.log

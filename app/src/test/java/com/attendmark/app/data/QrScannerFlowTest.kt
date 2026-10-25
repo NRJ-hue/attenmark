@@ -1,6 +1,7 @@
 package com.attendmark.app.data
 
 import com.google.firebase.functions.FirebaseFunctionsException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -400,5 +401,57 @@ class QrScannerFlowTest {
         // Case C: GPS accuracy uncertainty adjustment (-15 pts)
         val uncertainScore = (totalScoreHigh - 15).coerceAtLeast(0) // 79 pts
         assertEquals(79, uncertainScore)
+    }
+
+    // ─── 5. Backend Client API Integration Tests ─────────────────────────────────
+
+    @Test
+    fun validateToken_whenBackendReturnsSuccess_returnsSuccessResult() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "valid" to true,
+                "sessionId" to "sess-abc-123",
+                "courseCode" to "CS101",
+                "attempt" to 1,
+                "retryRemaining" to 1
+            )
+        }
+        val qrService = QrValidationService(backendClient = fakeBackend)
+        val result = qrService.validateToken(valid64HexToken, "CS101", "sess-abc-123")
+
+        assertTrue(result is QrValidationResult.Success)
+        val success = result as QrValidationResult.Success
+        assertEquals("sess-abc-123", success.sessionId)
+        assertEquals("CS101", success.courseCode)
+        assertEquals(1, success.attempt)
+        assertEquals(1, success.retryRemaining)
+    }
+
+    @Test
+    fun validateToken_whenBackendReturnsDeadlineExceeded_returnsExpired() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            shouldFail = true
+            failureCode = "DEADLINE_EXCEEDED"
+            failureMessage = "QR token expired (older than 30s)"
+        }
+        val qrService = QrValidationService(backendClient = fakeBackend)
+        val result = qrService.validateToken(valid64HexToken, "CS101", "sess-abc-123")
+
+        assertTrue(result is QrValidationResult.Expired)
+        assertEquals("QR token expired (older than 30s)", (result as QrValidationResult.Expired).message)
+    }
+
+    @Test
+    fun validateToken_whenBackendReturnsResourceExhausted_returnsRetriesExhausted() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            shouldFail = true
+            failureCode = "RESOURCE_EXHAUSTED"
+            failureMessage = "Maximum retries reached for this session"
+        }
+        val qrService = QrValidationService(backendClient = fakeBackend)
+        val result = qrService.validateToken(valid64HexToken, "CS101", "sess-abc-123")
+
+        assertTrue(result is QrValidationResult.RetriesExhausted)
+        assertEquals("Maximum retries reached for this session", (result as QrValidationResult.RetriesExhausted).message)
     }
 }

@@ -114,7 +114,8 @@ class DefaultFirestoreProfileStore(
  */
 class AuthRepository(
     private val authProvider: AuthProvider = DefaultFirebaseAuth(),
-    private val profileStore: UserProfileStore = DefaultFirestoreProfileStore()
+    private val profileStore: UserProfileStore = DefaultFirestoreProfileStore(),
+    private val backendClient: BackendClient = BackendApiClient
 ) {
 
     suspend fun login(email: String, password: String): AuthResult {
@@ -133,40 +134,60 @@ class AuthRepository(
         val (uid, displayName) = authResult.getOrNull()
             ?: return AuthResult.Error("Authentication failed: User details missing")
 
-        // Retrieve user document from Firestore to resolve authorized role
-        val profileResult = profileStore.getUserProfile(uid)
-        if (profileResult.isFailure) {
-            val err = profileResult.exceptionOrNull()?.localizedMessage ?: "Failed to verify user profile"
-            return AuthResult.Error("Profile check error: $err")
+        // 1. Authoritatively resolve role via backend API if reachable
+        var role: String? = null
+        var name: String? = null
+
+        val bootstrapResult = try {
+            backendClient.post(
+                "bootstrap-profile",
+                mapOf("name" to (displayName ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }))
+            )
+        } catch (_: Exception) {
+            Result.failure(Exception("Backend unreachable"))
         }
 
-        val profileData = profileResult.getOrNull()
-        val role: String
-        val name: String
-
-        if (profileData != null) {
-            val rawRole = (profileData["role"] as? String)?.lowercase()?.trim()
-            // Strictly check for "faculty"; anything else defaults to "student"
-            role = if (rawRole == "faculty") "faculty" else "student"
-            name = (profileData["name"] as? String)
-                ?: displayName
-                ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
-        } else {
-            // No profile document found in users/{uid}.
-            // Create default student profile. User cannot assign themselves faculty role.
-            role = "student"
-            name = displayName
-                ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
-
-            profileStore.createInitialStudentProfile(uid, cleanEmail, name)
+        if (bootstrapResult.isSuccess) {
+            val resData = bootstrapResult.getOrNull()
+            if (resData != null) {
+                role = (resData["role"] as? String)?.lowercase()?.trim()
+                name = resData["name"] as? String
+            }
         }
+
+        // 2. If backend was unreachable (e.g. offline or emulator without Render), fall back to Firestore profileStore
+        if (role == null) {
+            val profileResult = profileStore.getUserProfile(uid)
+            if (profileResult.isFailure) {
+                val err = profileResult.exceptionOrNull()?.localizedMessage ?: "Failed to verify user profile"
+                return AuthResult.Error("Profile check error: $err")
+            }
+
+            val profileData = profileResult.getOrNull()
+            if (profileData != null) {
+                val rawRole = (profileData["role"] as? String)?.lowercase()?.trim()
+                role = if (rawRole == "faculty") "faculty" else "student"
+                name = (profileData["name"] as? String)
+                    ?: displayName
+                    ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
+            } else {
+                role = "student"
+                name = displayName
+                    ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
+
+                profileStore.createInitialStudentProfile(uid, cleanEmail, name)
+            }
+        }
+
+        val resolvedRole = if (role == "faculty") "faculty" else "student"
+        val resolvedName = name ?: displayName ?: cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
 
         return AuthResult.Success(
             AuthUser(
                 uid = uid,
                 email = cleanEmail,
-                name = name,
-                role = role
+                name = resolvedName,
+                role = resolvedRole
             )
         )
     }

@@ -15,6 +15,7 @@ const {
   validateQrTokenCore,
   recordVerificationFailureCore
 } = require("./qr_service");
+const { bootstrapProfileCore } = require("./profile_service");
 
 /**
  * Normalizes parameters for Callable functions across Firebase Functions 1st gen and 2nd gen.
@@ -135,6 +136,23 @@ exports.recordVerificationFailure = functions.https.onCall(async (request, respo
       throw new functions.https.HttpsError(err.code, err.message);
     }
     console.error("Unexpected error in recordVerificationFailure:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: bootstrapProfile
+ * Callable by authenticated users to bootstrap/retrieve their profile with server-side role resolution.
+ */
+exports.bootstrapProfile = functions.https.onCall(async (request, response) => {
+  try {
+    const { data, authContext } = extractCallableParams(request, response);
+    return await bootstrapProfileCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in bootstrapProfile:", err);
     throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
   }
 });

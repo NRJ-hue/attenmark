@@ -23,6 +23,9 @@ android {
         debug {
             val host = (project.findProperty("emulatorHost") as? String)?.takeIf { it.isNotBlank() } ?: "10.0.2.2"
             buildConfigField("String", "EMULATOR_HOST", "\"$host\"")
+            val defaultBackend = if (host == "127.0.0.1") "http://127.0.0.1:3000" else if (host == "10.0.2.2") "http://10.0.2.2:3000" else "https://attendmark-backend.onrender.com"
+            val backendUrl = (project.findProperty("backendUrl") as? String)?.takeIf { it.isNotBlank() } ?: defaultBackend
+            buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
         }
         release {
             isMinifyEnabled = false
@@ -31,6 +34,8 @@ android {
                 "proguard-rules.pro"
             )
             buildConfigField("String", "EMULATOR_HOST", "\"\"")
+            val backendUrl = (project.findProperty("backendUrl") as? String)?.takeIf { it.isNotBlank() } ?: "https://attendmark-backend.onrender.com"
+            buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
         }
     }
 

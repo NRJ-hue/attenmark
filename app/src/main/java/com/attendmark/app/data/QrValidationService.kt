@@ -38,7 +38,8 @@ sealed class QrValidationResult {
  * Service to validate QR token payloads and invoke backend validation.
  */
 class QrValidationService(
-    private val functions: FirebaseFunctions = FirebaseFunctions.getInstance()
+    private val functions: FirebaseFunctions? = null,
+    private val backendClient: BackendClient = BackendApiClient
 ) {
     companion object {
         private val HEX_TOKEN_REGEX = Regex("^[0-9a-fA-F]{64}$")
@@ -121,7 +122,8 @@ class QrValidationService(
     }
 
     /**
-     * Call the validateQrToken Cloud Function with the scanned token, course code, and session ID.
+     * Call the validateQrToken endpoint with the scanned token, course code, and session ID.
+     * Uses BackendClient (Render API) with fallback to Cloud Functions emulator when enabled.
      */
     suspend fun validateToken(
         tokenId: String,
@@ -134,21 +136,19 @@ class QrValidationService(
             is TokenFormatResult.Valid -> { /* Valid format, proceed */ }
         }
 
-        return try {
-            val data = hashMapOf(
-                "tokenId" to tokenId.trim(),
-                "courseCode" to courseCode.trim(),
-                "sessionId" to sessionId.trim()
-            )
+        val data = hashMapOf(
+            "tokenId" to tokenId.trim(),
+            "courseCode" to courseCode.trim(),
+            "sessionId" to sessionId.trim()
+        )
 
-            val callable = functions.getHttpsCallable("validateQrToken")
-            val result = callable.call(data).await()
-
-            @Suppress("UNCHECKED_CAST")
-            val responseMap = result.data as? Map<String, Any?> ?: emptyMap()
+        // 1. Attempt via hosted Backend API (Render)
+        val backendResult = backendClient.post("validateQrToken", data)
+        if (backendResult.isSuccess) {
+            val responseMap = backendResult.getOrNull() ?: emptyMap()
             val isValid = responseMap["valid"] as? Boolean ?: false
 
-            if (isValid) {
+            return if (isValid) {
                 val resSessionId = responseMap["sessionId"] as? String ?: sessionId
                 val resCourseCode = responseMap["courseCode"] as? String ?: courseCode
                 val attempt = (responseMap["attempt"] as? Number)?.toInt() ?: 1
@@ -163,9 +163,45 @@ class QrValidationService(
             } else {
                 QrValidationResult.Error("Server returned invalid response")
             }
-        } catch (e: Exception) {
-            mapFunctionsException(e)
         }
+
+        val error = backendResult.exceptionOrNull()
+        if (error is BackendApiException) {
+            return mapCodeStringToResult(error.code, error.message ?: "Backend error")
+        }
+
+        // 2. Fallback to Cloud Functions emulator when emulator is enabled
+        if (FirebaseEmulatorConfig.isEmulatorEnabled) {
+            return try {
+                val fn = functions ?: FirebaseFunctions.getInstance()
+                val callable = fn.getHttpsCallable("validateQrToken")
+                val result = callable.call(data).await()
+
+                @Suppress("UNCHECKED_CAST")
+                val responseMap = result.data as? Map<String, Any?> ?: emptyMap()
+                val isValid = responseMap["valid"] as? Boolean ?: false
+
+                if (isValid) {
+                    val resSessionId = responseMap["sessionId"] as? String ?: sessionId
+                    val resCourseCode = responseMap["courseCode"] as? String ?: courseCode
+                    val attempt = (responseMap["attempt"] as? Number)?.toInt() ?: 1
+                    val retryRemaining = (responseMap["retryRemaining"] as? Number)?.toInt() ?: 0
+
+                    QrValidationResult.Success(
+                        sessionId = resSessionId,
+                        courseCode = resCourseCode,
+                        attempt = attempt,
+                        retryRemaining = retryRemaining
+                    )
+                } else {
+                    QrValidationResult.Error("Server returned invalid response")
+                }
+            } catch (e: Exception) {
+                mapFunctionsException(e)
+            }
+        }
+
+        return QrValidationResult.Error(error?.message ?: "Failed to connect to AttendIQ backend service.")
     }
 
     /**
@@ -176,19 +212,30 @@ class QrValidationService(
         courseCode: String,
         failureReason: String
     ): Result<Map<String, Any?>> {
-        return try {
-            val data = hashMapOf(
-                "sessionId" to sessionId.trim(),
-                "courseCode" to courseCode.trim(),
-                "failureReason" to failureReason.trim()
-            )
-            val callable = functions.getHttpsCallable("recordVerificationFailure")
-            val result = callable.call(data).await()
-            @Suppress("UNCHECKED_CAST")
-            val resMap = result.data as? Map<String, Any?> ?: emptyMap()
-            Result.success(resMap)
-        } catch (e: Exception) {
-            Result.failure(e)
+        val data = hashMapOf(
+            "sessionId" to sessionId.trim(),
+            "courseCode" to courseCode.trim(),
+            "failureReason" to failureReason.trim()
+        )
+
+        val backendResult = backendClient.post("recordVerificationFailure", data)
+        if (backendResult.isSuccess) {
+            return backendResult
         }
+
+        if (FirebaseEmulatorConfig.isEmulatorEnabled) {
+            return try {
+                val fn = functions ?: FirebaseFunctions.getInstance()
+                val callable = fn.getHttpsCallable("recordVerificationFailure")
+                val result = callable.call(data).await()
+                @Suppress("UNCHECKED_CAST")
+                val resMap = result.data as? Map<String, Any?> ?: emptyMap()
+                Result.success(resMap)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+        return backendResult
     }
 }

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: attendiq-backend
+    env: node
+    plan: free
+    rootDir: functions
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_PROJECT_ID
+        value: attendmark-c2f07
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

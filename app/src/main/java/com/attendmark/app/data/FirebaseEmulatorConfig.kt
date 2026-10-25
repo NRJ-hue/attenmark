@@ -15,7 +15,10 @@ object FirebaseEmulatorConfig {
      * Flag to control connecting to the Firebase Emulator Suite during development.
      * Defaults to true in debug builds, false in release.
      */
-    var isEmulatorEnabled: Boolean = BuildConfig.DEBUG
+    var isEmulatorEnabled: Boolean = BuildConfig.DEBUG &&
+        BuildConfig.EMULATOR_HOST.isNotBlank() &&
+        BuildConfig.EMULATOR_HOST != "cloud" &&
+        BuildConfig.EMULATOR_HOST != "none"
 
     /**
      * Default host: "10.0.2.2" maps to localhost from the Android Studio emulator.

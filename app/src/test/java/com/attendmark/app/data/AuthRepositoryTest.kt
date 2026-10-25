@@ -134,6 +134,77 @@ class AuthRepositoryTest {
         assertTrue(fakeAuthProvider.signOutCalled)
         assertNull(fakeAuthProvider.getCurrentUser())
     }
+
+    @Test
+    fun login_whenBackendReturnsAuthoritativeFacultyRole_assignsFacultyRole() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "faculty",
+                "name" to "Prof. Turing",
+                "uid" to "uid-fac-render",
+                "email" to "turing@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+        fakeAuthProvider.configureUser("turing@univ.edu", "pass123", "uid-fac-render", null)
+
+        val result = customRepo.login("turing@univ.edu", "pass123")
+        assertTrue(result is AuthResult.Success)
+        val user = (result as AuthResult.Success).user
+        assertEquals("faculty", user.role)
+        assertEquals("Prof. Turing", user.name)
+        assertEquals("bootstrap-profile", fakeBackend.lastEndpoint)
+    }
+
+    @Test
+    fun login_whenBackendReturnsAuthoritativeStudentRole_assignsStudentRole() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "student",
+                "name" to "Student 21BCS",
+                "uid" to "uid-stu-render",
+                "email" to "21bcs001@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+        fakeAuthProvider.configureUser("21bcs001@univ.edu", "pass123", "uid-stu-render", null)
+
+        val result = customRepo.login("21bcs001@univ.edu", "pass123")
+        assertTrue(result is AuthResult.Success)
+        val user = (result as AuthResult.Success).user
+        assertEquals("student", user.role)
+        assertEquals("Student 21BCS", user.name)
+    }
+
+    @Test
+    fun login_whenBackendFails_fallsBackToFirestoreProfileStore() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            shouldFail = true
+            failureCode = "UNAVAILABLE"
+            failureMessage = "Cold start timeout"
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+        fakeAuthProvider.configureUser("student@test.com", "pass123", "uid-offline", "Offline Student")
+        fakeProfileStore.setProfile("uid-offline", mapOf("role" to "student", "name" to "Offline Student"))
+
+        val result = customRepo.login("student@test.com", "pass123")
+        assertTrue(result is AuthResult.Success)
+        val user = (result as AuthResult.Success).user
+        assertEquals("student", user.role)
+        assertEquals("Offline Student", user.name)
+    }
 }
 
 /**
@@ -201,5 +272,26 @@ class FakeUserProfileStore : UserProfileStore {
         profiles[uid] = data
         lastCreatedProfile = Pair(uid, data)
         return Result.success(Unit)
+    }
+}
+
+/**
+ * In-memory test double for BackendClient.
+ */
+class FakeBackendClient : BackendClient {
+    var responseMap: Map<String, Any?>? = null
+    var shouldFail: Boolean = false
+    var failureCode: String = "INTERNAL"
+    var failureMessage: String = "Server error"
+    var lastEndpoint: String? = null
+    var lastPayload: Map<String, Any?>? = null
+
+    override suspend fun post(endpoint: String, payload: Map<String, Any?>): Result<Map<String, Any?>> {
+        lastEndpoint = endpoint
+        lastPayload = payload
+        if (shouldFail) {
+            return Result.failure(BackendApiException(failureCode, failureMessage))
+        }
+        return Result.success(responseMap ?: emptyMap())
     }
 }

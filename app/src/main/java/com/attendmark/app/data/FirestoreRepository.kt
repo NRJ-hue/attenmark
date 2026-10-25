@@ -3,9 +3,12 @@ package com.attendmark.app.data
 import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.functions.FirebaseFunctions
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
@@ -136,7 +139,7 @@ class FirestoreRepository {
     // ---- Session Management ----
 
     /**
-     * Starts a new attendance session via backend Cloud Function.
+     * Starts a new attendance session via backend API (or Cloud Functions in emulator).
      * Enforces authoritative server-side role check, course ownership, and geofence coordinates.
      */
     fun startSession(
@@ -147,38 +150,64 @@ class FirestoreRepository {
         durationMinutes: Int,
         onSuccess: (Long) -> Unit
     ) {
-        val payload = hashMapOf(
+        val payload = hashMapOf<String, Any?>(
             "courseCode" to courseCode,
             "latitude" to latitude,
             "longitude" to longitude,
             "durationMinutes" to durationMinutes
         )
 
-        FirebaseFunctions.getInstance()
-            .getHttpsCallable("startAttendanceSession")
-            .call(payload)
-            .addOnSuccessListener { result ->
-                val resData = result.data as? Map<*, *>
+        CoroutineScope(Dispatchers.Main).launch {
+            val backendResult = BackendApiClient.post("startAttendanceSession", payload)
+            if (backendResult.isSuccess) {
+                val resData = backendResult.getOrNull()
                 val expiresAt = (resData?.get("expiresAt") as? Number)?.toLong()
                     ?: (System.currentTimeMillis() + durationMinutes * 60 * 1000L)
                 onSuccess(expiresAt)
+                return@launch
             }
-            .addOnFailureListener { e ->
-                Log.e("FirestoreRepository", "Failed to start attendance session via Cloud Function", e)
+
+            if (FirebaseEmulatorConfig.isEmulatorEnabled) {
+                FirebaseFunctions.getInstance()
+                    .getHttpsCallable("startAttendanceSession")
+                    .call(payload)
+                    .addOnSuccessListener { result ->
+                        val resData = result.data as? Map<*, *>
+                        val expiresAt = (resData?.get("expiresAt") as? Number)?.toLong()
+                            ?: (System.currentTimeMillis() + durationMinutes * 60 * 1000L)
+                        onSuccess(expiresAt)
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("FirestoreRepository", "Failed to start attendance session via Cloud Function", e)
+                    }
+            } else {
+                Log.e("FirestoreRepository", "Failed to start attendance session via backend API", backendResult.exceptionOrNull())
             }
+        }
     }
 
     /**
-     * Stops an active attendance session via backend Cloud Function.
+     * Stops an active attendance session via backend API (or Cloud Functions in emulator).
      */
     fun stopSession(courseCode: String) {
-        val payload = hashMapOf("courseCode" to courseCode)
-        FirebaseFunctions.getInstance()
-            .getHttpsCallable("stopAttendanceSession")
-            .call(payload)
-            .addOnFailureListener { e ->
-                Log.e("FirestoreRepository", "Failed to stop attendance session via Cloud Function", e)
+        val payload = hashMapOf<String, Any?>("courseCode" to courseCode)
+        CoroutineScope(Dispatchers.Main).launch {
+            val backendResult = BackendApiClient.post("stopAttendanceSession", payload)
+            if (backendResult.isSuccess) {
+                return@launch
             }
+
+            if (FirebaseEmulatorConfig.isEmulatorEnabled) {
+                FirebaseFunctions.getInstance()
+                    .getHttpsCallable("stopAttendanceSession")
+                    .call(payload)
+                    .addOnFailureListener { e ->
+                        Log.e("FirestoreRepository", "Failed to stop attendance session via Cloud Function", e)
+                    }
+            } else {
+                Log.e("FirestoreRepository", "Failed to stop attendance session via backend API", backendResult.exceptionOrNull())
+            }
+        }
     }
 
     suspend fun getActiveSession(courseCode: String): Map<String, Any>? {

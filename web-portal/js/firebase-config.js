@@ -59,12 +59,63 @@ if (isLocal) {
   }
 }
 
+/**
+ * Executes a call to the AttendIQ backend API.
+ * In Cloud Production (Firebase Hosting + Render):
+ *   Makes an authenticated POST request to Render with Bearer Firebase ID Token.
+ * In Local Development:
+ *   Attempts local backend URL (http://127.0.0.1:3000) or falls back to Firebase Functions emulator.
+ */
+async function callBackendApi(endpoint, data = {}) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error("User must be authenticated.");
+  }
+
+  const idToken = await currentUser.getIdToken();
+  const backendBaseUrl = window.ATTENDIQ_BACKEND_URL ||
+    localStorage.getItem("attendiq_backend_url") ||
+    (isLocal ? "http://127.0.0.1:3000" : "https://attendmark-backend.onrender.com");
+
+  const normalizedBase = backendBaseUrl.replace(/\/+$/, "");
+  const targetUrl = `${normalizedBase}/api/${endpoint}`;
+
+  try {
+    const res = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${idToken}`
+      },
+      body: JSON.stringify({ data })
+    });
+
+    const resJson = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error((resJson.error && resJson.error.message) || `API error (${res.status})`);
+      err.code = resJson.error && resJson.error.code;
+      throw err;
+    }
+
+    const returnData = resJson.data !== undefined ? resJson.data : resJson;
+    return { data: returnData };
+  } catch (err) {
+    if (isLocal) {
+      console.warn(`Backend fetch to ${targetUrl} failed (${err.message}). Trying Cloud Functions emulator fallback.`);
+      const fn = httpsCallable(functions, endpoint);
+      return await fn(data);
+    }
+    throw err;
+  }
+}
+
 export {
   app,
   auth,
   db,
   functions,
   isLocal,
+  callBackendApi,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,

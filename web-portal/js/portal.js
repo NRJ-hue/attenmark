@@ -5,6 +5,7 @@ import {
   auth,
   db,
   functions,
+  callBackendApi,
   signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
@@ -97,6 +98,7 @@ const recordsTableBody = document.getElementById("records-table-body");
 const tableEmptyState = document.getElementById("table-empty-state");
 const tabButtons = document.querySelectorAll(".tab-btn");
 
+const emulatorStatusEl = document.getElementById("emulator-status");
 const modalRejectReason = document.getElementById("modal-reject-reason");
 const formRejectReason = document.getElementById("form-reject-reason");
 const rejectRecordId = document.getElementById("reject-record-id");
@@ -124,21 +126,47 @@ function hideAlert(element) {
 onAuthStateChanged(auth, async (user) => {
   if (user) {
     try {
-      const userDocRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userDocRef);
+      if (emulatorStatusEl) {
+        emulatorStatusEl.textContent = isLocal ? "● Local Emulator Mode" : "● Cloud Production Mode";
+      }
 
-      if (!userSnap.exists() || userSnap.data().role !== "faculty") {
+      // Authoritative profile check via backend API with Firestore fallback
+      let userRole = null;
+      let userName = user.displayName;
+
+      try {
+        const bootstrapRes = await callBackendApi("bootstrap-profile", {
+          name: user.displayName || user.email.split("@")[0]
+        });
+        if (bootstrapRes && bootstrapRes.data) {
+          userRole = bootstrapRes.data.role;
+          userName = bootstrapRes.data.name || userName;
+        }
+      } catch (apiErr) {
+        console.warn("Notice: Backend bootstrap check fell back to direct Firestore read:", apiErr.message);
+      }
+
+      if (!userRole) {
+        const userDocRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          const uData = userSnap.data();
+          userRole = uData.role;
+          userName = uData.name || userName;
+        }
+      }
+
+      if (userRole !== "faculty") {
         await signOut(auth);
         showAlert(loginAlert, "Access Denied: Only verified faculty accounts are permitted to enter this portal.", "error");
         switchView("login");
         return;
       }
 
-      const userData = userSnap.data();
       currentFacultyUser = {
         uid: user.uid,
         email: user.email,
-        name: userData.name || user.displayName || user.email.split("@")[0],
+        name: userName || user.displayName || user.email.split("@")[0],
         role: "faculty"
       };
 
@@ -422,9 +450,8 @@ btnStartSession.addEventListener("click", async () => {
   btnStartSession.textContent = "Starting Session...";
 
   try {
-    // Call backend Cloud Function for atomic session creation
-    const startFn = httpsCallable(functions, "startAttendanceSession");
-    const res = await startFn({
+    // Call backend API for atomic session creation
+    const res = await callBackendApi("startAttendanceSession", {
       courseCode: currentCourse.classCode,
       durationMinutes,
       latitude,
@@ -501,8 +528,7 @@ async function refreshQrToken() {
   if (!activeSession || !activeSession.isActive) return;
 
   try {
-    const genQrFn = httpsCallable(functions, "generateQrToken");
-    const res = await genQrFn({
+    const res = await callBackendApi("generateQrToken", {
       courseCode: activeSession.courseCode,
       sessionId: activeSession.sessionId
     });
@@ -582,8 +608,7 @@ btnStopSession.addEventListener("click", async () => {
   btnStopSession.textContent = "Ending Session...";
 
   try {
-    const stopFn = httpsCallable(functions, "stopAttendanceSession");
-    await stopFn({ courseCode: activeSession.courseCode });
+    await callBackendApi("stopAttendanceSession", { courseCode: activeSession.courseCode });
     stopSessionLocal();
   } catch (err) {
     console.error("Backend stop call failed:", err);
