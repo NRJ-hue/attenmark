@@ -737,10 +737,119 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
         assert.deepStrictEqual(extracted.data, {});
         assert.deepStrictEqual(extracted.authContext, { uid: FACULTY_UID, email: FACULTY_EMAIL });
       });
+
+      it("normalizes 2nd gen CallableRequest when runtime passes responseProxy as arg2", function () {
+        const req = {
+          data: { courseCode: COURSE_CODE, durationMinutes: 10 },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        };
+        const responseProxy = {
+          sendChunk: () => {},
+          signal: {}
+        };
+        const extracted = extractCallableParams(req, responseProxy);
+        assert.deepStrictEqual(extracted.data, { courseCode: COURSE_CODE, durationMinutes: 10 });
+        assert.deepStrictEqual(extracted.authContext, { uid: FACULTY_UID, email: FACULTY_EMAIL });
+      });
     });
 
     describe("Callable entrypoints via .run() with 2nd gen CallableRequest", function () {
       it("startAttendanceSession.run() succeeds with authenticated faculty", async function () {
+        const res = await startAttendanceSession.run({
+          data: {
+            courseCode: COURSE_CODE,
+            durationMinutes: 15,
+            latitude: 12.9716,
+            longitude: 77.5946
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+        assert.ok(res.sessionId);
+        assert.strictEqual(res.courseCode, COURSE_CODE);
+        assert.strictEqual(res.latitude, 12.9716);
+        assert.strictEqual(res.longitude, 77.5946);
+        assert.strictEqual(res.locationConfigured, true);
+      });
+
+      it("startAttendanceSession.run() succeeds when runtime supplies responseProxy as arg2 (v7 emulator/live runtime)", async function () {
+        const responseProxy = { sendChunk: () => {}, signal: {} };
+        const res = await startAttendanceSession.run(
+          {
+            data: {
+              courseCode: COURSE_CODE,
+              durationMinutes: 15,
+              latitude: 12.9716,
+              longitude: 77.5946
+            },
+            auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+          },
+          responseProxy
+        );
+        assert.ok(res.sessionId);
+        assert.strictEqual(res.courseCode, COURSE_CODE);
+        assert.strictEqual(res.latitude, 12.9716);
+        assert.strictEqual(res.longitude, 77.5946);
+        assert.strictEqual(res.locationConfigured, true);
+      });
+
+      it("startAttendanceSession.run() with responseProxy REJECTS unauthenticated caller with unauthenticated HttpsError", async function () {
+        const responseProxy = { sendChunk: () => {}, signal: {} };
+        await assert.rejects(
+          startAttendanceSession.run(
+            {
+              data: {
+                courseCode: COURSE_CODE,
+                durationMinutes: 10,
+                latitude: 12.9716,
+                longitude: 77.5946
+              },
+              auth: null
+            },
+            responseProxy
+          ),
+          (err) => err.code === "unauthenticated"
+        );
+      });
+
+      it("startAttendanceSession.run() with responseProxy REJECTS student caller with permission-denied", async function () {
+        const responseProxy = { sendChunk: () => {}, signal: {} };
+        await assert.rejects(
+          startAttendanceSession.run(
+            {
+              data: {
+                courseCode: COURSE_CODE,
+                durationMinutes: 10,
+                latitude: 12.9716,
+                longitude: 77.5946
+              },
+              auth: { uid: STUDENT_1_UID, token: { email: STUDENT_1_EMAIL } }
+            },
+            responseProxy
+          ),
+          (err) => err.code === "permission-denied"
+        );
+      });
+
+      it("startAttendanceSession.run() with responseProxy REJECTS unauthorized faculty with permission-denied", async function () {
+        const responseProxy = { sendChunk: () => {}, signal: {} };
+        await assert.rejects(
+          startAttendanceSession.run(
+            {
+              data: {
+                courseCode: COURSE_CODE,
+                durationMinutes: 10,
+                latitude: 12.9716,
+                longitude: 77.5946
+              },
+              auth: { uid: OTHER_FACULTY_UID, token: { email: OTHER_FACULTY_EMAIL } }
+            },
+            responseProxy
+          ),
+          (err) => err.code === "permission-denied"
+        );
+      });
+
+      it("startAttendanceSession.run() succeeds with authenticated faculty (direct request)", async function () {
         const res = await startAttendanceSession.run({
           data: {
             courseCode: COURSE_CODE,
