@@ -66,6 +66,7 @@ fun LoginScreen(
 
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var pendingBootstrapName by remember { mutableStateOf<String?>(null) }
 
     val isFaceEnrolled by prefs.isFaceEnrolled.collectAsState(initial = false)
 
@@ -134,6 +135,7 @@ fun LoginScreen(
                             onClick = {
                                 selectedTab = AuthTab.SIGN_IN
                                 errorMessage = null
+                                pendingBootstrapName = null
                             },
                             enabled = !isLoading,
                             text = {
@@ -149,6 +151,7 @@ fun LoginScreen(
                             onClick = {
                                 selectedTab = AuthTab.REGISTER
                                 errorMessage = null
+                                pendingBootstrapName = null
                             },
                             enabled = !isLoading,
                             text = {
@@ -179,6 +182,7 @@ fun LoginScreen(
                             onValueChange = {
                                 name = it
                                 errorMessage = null
+                                pendingBootstrapName = null
                             },
                             label = { Text("Full Name (Optional)") },
                             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = PrimaryBlue) },
@@ -205,6 +209,7 @@ fun LoginScreen(
                         onValueChange = {
                             email = it
                             errorMessage = null
+                            pendingBootstrapName = null
                         },
                         label = {
                             Text(
@@ -244,6 +249,7 @@ fun LoginScreen(
                         onValueChange = {
                             password = it
                             errorMessage = null
+                            pendingBootstrapName = null
                         },
                         label = {
                             Text(if (selectedTab == AuthTab.REGISTER) "Password (min. 6 chars)" else "Password")
@@ -280,6 +286,7 @@ fun LoginScreen(
                             onValueChange = {
                                 confirmPassword = it
                                 errorMessage = null
+                                pendingBootstrapName = null
                             },
                             label = { Text("Confirm Password") },
                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = PrimaryBlue) },
@@ -327,38 +334,18 @@ fun LoginScreen(
                         }
                     }
 
-                    // Submit Button
-                    Button(
-                        onClick = {
-                            val trimmedEmail = email.trim()
-                            val exactPassword = password
-                            val trimmedName = name.trim()
-
-                            if (trimmedEmail.isBlank() || exactPassword.isEmpty()) {
-                                errorMessage = "Please enter email and password"
-                                return@Button
-                            }
-
-                            if (selectedTab == AuthTab.REGISTER) {
-                                if (trimmedEmail.length < 2 || !trimmedEmail[0].isDigit() || !trimmedEmail[1].isDigit()) {
-                                    errorMessage = "Student email must start with your 2-digit roll/year prefix (e.g. 21...)"
-                                    return@Button
-                                }
-                                if (exactPassword.length < 6) {
-                                    errorMessage = "Password must be at least 6 characters"
-                                    return@Button
-                                }
-                                if (exactPassword != confirmPassword) {
-                                    errorMessage = "Passwords do not match"
-                                    return@Button
-                                }
-
+                    // Action Buttons
+                    if (pendingBootstrapName != null) {
+                        // Retry Profile Setup Mode
+                        Button(
+                            onClick = {
                                 isLoading = true
                                 errorMessage = null
                                 scope.launch {
-                                    when (val result = authRepo.register(trimmedEmail, exactPassword, confirmPassword, trimmedName)) {
+                                    when (val result = authRepo.retryBootstrapProfile(pendingBootstrapName ?: "")) {
                                         is AuthResult.Success -> {
                                             val user = result.user
+                                            pendingBootstrapName = null
                                             if (user.role == "faculty") {
                                                 authRepo.logout()
                                                 isLoading = false
@@ -373,61 +360,159 @@ fun LoginScreen(
                                                 }
                                             }
                                         }
+                                        is AuthResult.BootstrapPending -> {
+                                            isLoading = false
+                                            errorMessage = result.message
+                                        }
                                         is AuthResult.Error -> {
                                             isLoading = false
                                             errorMessage = result.message
                                         }
                                     }
                                 }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp
+                                )
                             } else {
-                                // SIGN_IN flow
-                                isLoading = true
+                                Text("Retry Profile Setup", fontSize = 16.sp, color = Color.White)
+                            }
+                        }
+
+                        TextButton(
+                            onClick = {
+                                authRepo.logout()
+                                pendingBootstrapName = null
                                 errorMessage = null
-                                scope.launch {
-                                    when (val result = authRepo.login(trimmedEmail, exactPassword)) {
-                                        is AuthResult.Success -> {
-                                            val user = result.user
-                                            if (user.role == "faculty") {
-                                                authRepo.logout()
-                                                isLoading = false
-                                                errorMessage = "Faculty account detected. Faculty members must use the Faculty Web Portal at https://attendmark-c2f07.web.app"
-                                            } else {
-                                                prefs.saveLoginState(user.email, user.role, user.name, user.uid)
-                                                isLoading = false
-                                                if (isFaceEnrolled) {
-                                                    onStudentLogin()
+                            },
+                            enabled = !isLoading,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Cancel & Sign Out", color = TextSecondary)
+                        }
+                    } else {
+                        // Normal Submit Button
+                        Button(
+                            onClick = {
+                                val trimmedEmail = email.trim()
+                                val exactPassword = password
+                                val trimmedName = name.trim()
+
+                                if (trimmedEmail.isBlank() || exactPassword.isEmpty()) {
+                                    errorMessage = "Please enter email and password"
+                                    return@Button
+                                }
+
+                                if (selectedTab == AuthTab.REGISTER) {
+                                    if (trimmedEmail.length < 2 || !trimmedEmail[0].isDigit() || !trimmedEmail[1].isDigit()) {
+                                        errorMessage = "Student email must start with your 2-digit roll/year prefix (e.g. 21...)"
+                                        return@Button
+                                    }
+                                    if (exactPassword.length < 6) {
+                                        errorMessage = "Password must be at least 6 characters"
+                                        return@Button
+                                    }
+                                    if (exactPassword != confirmPassword) {
+                                        errorMessage = "Passwords do not match"
+                                        return@Button
+                                    }
+
+                                    isLoading = true
+                                    errorMessage = null
+                                    scope.launch {
+                                        when (val result = authRepo.register(trimmedEmail, exactPassword, confirmPassword, trimmedName)) {
+                                            is AuthResult.Success -> {
+                                                val user = result.user
+                                                if (user.role == "faculty") {
+                                                    authRepo.logout()
+                                                    isLoading = false
+                                                    errorMessage = "Faculty account detected. Student registration is for students only. Please use the Faculty Web Portal at https://attendmark-c2f07.web.app"
                                                 } else {
-                                                    onEnrollmentNeeded()
+                                                    prefs.saveLoginState(user.email, user.role, user.name, user.uid)
+                                                    isLoading = false
+                                                    if (isFaceEnrolled) {
+                                                        onStudentLogin()
+                                                    } else {
+                                                        onEnrollmentNeeded()
+                                                    }
                                                 }
                                             }
+                                            is AuthResult.BootstrapPending -> {
+                                                isLoading = false
+                                                errorMessage = result.message
+                                                pendingBootstrapName = result.name
+                                            }
+                                            is AuthResult.Error -> {
+                                                isLoading = false
+                                                errorMessage = result.message
+                                            }
                                         }
-                                        is AuthResult.Error -> {
-                                            isLoading = false
-                                            errorMessage = result.message
+                                    }
+                                } else {
+                                    // SIGN_IN flow
+                                    isLoading = true
+                                    errorMessage = null
+                                    scope.launch {
+                                        when (val result = authRepo.login(trimmedEmail, exactPassword)) {
+                                            is AuthResult.Success -> {
+                                                val user = result.user
+                                                if (user.role == "faculty") {
+                                                    authRepo.logout()
+                                                    isLoading = false
+                                                    errorMessage = "Faculty account detected. Faculty members must use the Faculty Web Portal at https://attendmark-c2f07.web.app"
+                                                } else {
+                                                    prefs.saveLoginState(user.email, user.role, user.name, user.uid)
+                                                    isLoading = false
+                                                    if (isFaceEnrolled) {
+                                                        onStudentLogin()
+                                                    } else {
+                                                        onEnrollmentNeeded()
+                                                    }
+                                                }
+                                            }
+                                            is AuthResult.BootstrapPending -> {
+                                                isLoading = false
+                                                errorMessage = result.message
+                                                pendingBootstrapName = result.name
+                                            }
+                                            is AuthResult.Error -> {
+                                                isLoading = false
+                                                errorMessage = result.message
+                                            }
                                         }
                                     }
                                 }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(
+                                    text = if (selectedTab == AuthTab.SIGN_IN) "Sign In" else "Register as Student",
+                                    fontSize = 16.sp,
+                                    color = Color.White
+                                )
                             }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        enabled = !isLoading,
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                color = Color.White,
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Text(
-                                text = if (selectedTab == AuthTab.SIGN_IN) "Sign In" else "Register as Student",
-                                fontSize = 16.sp,
-                                color = Color.White
-                            )
                         }
                     }
 

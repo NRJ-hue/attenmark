@@ -27,18 +27,10 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isAuthenticated();
 
-      // Self-registration can strictly assign ONLY 'student' role.
-      // Faculty role can never be self-assigned.
-      allow create: if isUser(uid) && 
-                       request.resource.data.role == 'student' &&
-                       request.resource.data.email == request.auth.token.email;
-
-      // Users cannot change their assigned role or email.
-      allow update: if isUser(uid) && 
-                       request.resource.data.role == resource.data.role &&
-                       request.resource.data.email == resource.data.email;
-
-      allow delete: if false;
+      // User profiles and roles are created and updated EXCLUSIVELY by the trusted backend
+      // (Firebase Admin SDK). Direct client-side creation, update, or deletion is strictly prohibited
+      // to prevent role manipulation or bypassing server-side classification.
+      allow create, update, delete: if false;
     }
 
     // 2. Courses (courses/{courseId})

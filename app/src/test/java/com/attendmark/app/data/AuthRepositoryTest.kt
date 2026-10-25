@@ -10,6 +10,9 @@ import org.junit.Test
 /**
  * Unit tests for AuthRepository verifying authentication flow, input validation,
  * error mapping, and strict server-side role resolution rules.
+ *
+ * Confirms that profiles and roles are created strictly by the authoritative backend
+ * and that client-side Firestore profile creation is prohibited.
  */
 class AuthRepositoryTest {
 
@@ -100,18 +103,18 @@ class AuthRepositoryTest {
     }
 
     @Test
-    fun login_whenNoProfileExists_defaultsToStudentAndCreatesProfile() = runBlocking {
-        fakeAuthProvider.configureUser("new@test.com", "pass123", "uid-new", "New Student")
+    fun login_whenBackendFailsAndNoProfileExists_returnsBootstrapPendingWithoutCreatingProfile() = runBlocking {
+        fakeAuthProvider.configureUser("new@test.com", "pass123", "uid-new", "New User")
 
         val result = repository.login("new@test.com", "pass123")
-        assertTrue(result is AuthResult.Success)
-        val user = (result as AuthResult.Success).user
-        assertEquals("student", user.role) // Safe default: cannot be faculty
-
-        // Verifies profile was automatically created
-        val created = fakeProfileStore.getProfile("uid-new")
-        assertTrue(created != null)
-        assertEquals("student", created?.get("role"))
+        // Must NOT create profile directly in Firestore; must prompt retry
+        assertTrue(result is AuthResult.BootstrapPending)
+        val pending = result as AuthResult.BootstrapPending
+        assertEquals("new@test.com", pending.email)
+        assertEquals("New User", pending.name)
+        assertNull("No profile must be written to Firestore client-side", fakeProfileStore.getProfile("uid-new"))
+        // User remains signed in to Auth
+        assertTrue(fakeAuthProvider.getCurrentUser() != null)
     }
 
     @Test
@@ -185,7 +188,7 @@ class AuthRepositoryTest {
     }
 
     @Test
-    fun login_whenBackendFails_fallsBackToFirestoreProfileStore() = runBlocking {
+    fun login_whenBackendFails_fallsBackToExistingFirestoreProfile() = runBlocking {
         val fakeBackend = FakeBackendClient().apply {
             shouldFail = true
             failureCode = "UNAVAILABLE"
@@ -294,7 +297,7 @@ class AuthRepositoryTest {
     }
 
     @Test
-    fun register_whenBackendOffline_createsStudentProfileInStore() = runBlocking {
+    fun register_whenBackendFailsAndNoProfileExists_returnsBootstrapPendingWithoutCreatingProfile() = runBlocking {
         val fakeBackend = FakeBackendClient().apply {
             shouldFail = true
             failureCode = "UNAVAILABLE"
@@ -307,15 +310,74 @@ class AuthRepositoryTest {
         )
 
         val result = customRepo.register("23bcs05@univ.edu", "password123", "password123", "Alice Smith")
+        assertTrue(result is AuthResult.BootstrapPending)
+        val pending = result as AuthResult.BootstrapPending
+        assertEquals("23bcs05@univ.edu", pending.email)
+        assertEquals("Alice Smith", pending.name)
+
+        // Verifies NO client-side profile write occurred
+        assertNull("No profile document should be written client-side in Firestore", fakeProfileStore.getProfile("uid-1"))
+        // User session is preserved
+        assertTrue("User must remain authenticated in Auth to allow retry", fakeAuthProvider.getCurrentUser() != null)
+    }
+
+    // ---- Retry Profile Bootstrap Tests ----
+
+    @Test
+    fun retryBootstrapProfile_whenBackendRecovers_returnsSuccessWithAuthoritativeRole() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "student",
+                "name" to "Alice Smith",
+                "uid" to "uid-retry-1",
+                "email" to "23bcs05@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+        fakeAuthProvider.configureUser("23bcs05@univ.edu", "pass123", "uid-retry-1", "Alice Smith")
+        fakeAuthProvider.signIn("23bcs05@univ.edu", "pass123")
+
+        val result = customRepo.retryBootstrapProfile("Alice Smith")
         assertTrue(result is AuthResult.Success)
         val user = (result as AuthResult.Success).user
         assertEquals("student", user.role)
         assertEquals("Alice Smith", user.name)
+        assertEquals("23bcs05@univ.edu", user.email)
+    }
 
-        val created = fakeProfileStore.lastCreatedProfile
-        assertTrue(created != null)
-        assertEquals("student", created?.second?.get("role"))
-        assertEquals("23bcs05@univ.edu", created?.second?.get("email"))
+    @Test
+    fun retryBootstrapProfile_whenBackendReturnsFaculty_rejectsAndSignsOut() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "faculty",
+                "name" to "Prof. Smith",
+                "uid" to "uid-retry-fac",
+                "email" to "smith@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+        fakeAuthProvider.configureUser("smith@univ.edu", "pass123", "uid-retry-fac", "Prof. Smith")
+        fakeAuthProvider.signIn("smith@univ.edu", "pass123")
+
+        val result = customRepo.retryBootstrapProfile("Prof. Smith")
+        assertTrue(result is AuthResult.Error)
+        assertTrue((result as AuthResult.Error).message.contains("Faculty account detected"))
+        assertTrue(fakeAuthProvider.signOutCalled)
+    }
+
+    @Test
+    fun retryBootstrapProfile_whenNotAuthenticated_returnsError() = runBlocking {
+        val result = repository.retryBootstrapProfile("Nobody")
+        assertTrue(result is AuthResult.Error)
+        assertTrue((result as AuthResult.Error).message.contains("No authenticated session"))
     }
 
     // ---- Emulator Config Tests ----
@@ -382,11 +444,10 @@ class FakeAuthProvider : AuthProvider {
 }
 
 /**
- * In-memory test double for UserProfileStore.
+ * In-memory test double for UserProfileStore (READ ONLY).
  */
 class FakeUserProfileStore : UserProfileStore {
     private val profiles = mutableMapOf<String, Map<String, Any>>()
-    var lastCreatedProfile: Pair<String, Map<String, Any>>? = null
 
     fun setProfile(uid: String, data: Map<String, Any>) {
         profiles[uid] = data
@@ -396,18 +457,6 @@ class FakeUserProfileStore : UserProfileStore {
 
     override suspend fun getUserProfile(uid: String): Result<Map<String, Any>?> {
         return Result.success(profiles[uid])
-    }
-
-    override suspend fun createInitialStudentProfile(uid: String, email: String, name: String): Result<Unit> {
-        val data = mapOf(
-            "email" to email,
-            "role" to "student",
-            "name" to name,
-            "createdAt" to System.currentTimeMillis()
-        )
-        profiles[uid] = data
-        lastCreatedProfile = Pair(uid, data)
-        return Result.success(Unit)
     }
 }
 

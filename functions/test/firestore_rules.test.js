@@ -72,18 +72,32 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
   // ─── 1. Role Escalation & User Profile Rules ───────────────────────────────
 
   describe("users/{uid} rules", function () {
-    it("allows a new user to self-register strictly as a student", async function () {
+    it("DENIES direct client creation of user profile (must be created via backend bootstrap)", async function () {
       const newStudentCtx = testEnv.authenticatedContext("new-student-uid", {
-        email: "newstudent@test.com"
+        email: "21student@test.com"
       });
       const studentDb = newStudentCtx.firestore();
 
-      await assertSucceeds(
+      await assertFails(
         setDoc(doc(studentDb, "users/new-student-uid"), {
           role: "student",
-          email: "newstudent@test.com",
+          email: "21student@test.com",
           name: "New Student"
         })
+      );
+    });
+
+    it("ALLOWS authenticated users to read profiles", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      await assertSucceeds(
+        getDoc(doc(studentDb, "users/student-uid-1"))
+      );
+      await assertSucceeds(
+        getDoc(doc(studentDb, "users/faculty-uid"))
       );
     });
 
