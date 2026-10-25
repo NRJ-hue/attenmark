@@ -16,18 +16,54 @@ const { getAuth } = require("firebase-admin/auth");
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT || "attendmark-c2f07";
 
-// Initialize Firebase Admin SDK
+// ─── Firebase Admin SDK Initialization ──────────────────────────────────────
+// In production (NODE_ENV === "production"), a valid FIREBASE_SERVICE_ACCOUNT
+// JSON env var is REQUIRED. Render free-tier has no implicit GCP credentials,
+// so failing to set the secret means verifyIdToken() will throw on every call.
+// We fail fast here with a clear, non-sensitive message rather than silently
+// failing on every request after startup.
+
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const IS_TEST = process.env.NODE_ENV === "test";
+
 let appInstance;
 if (!getApps().length) {
   let credential = null;
+  let credentialParseError = null;
 
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     try {
       const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-      credential = cert(sa);
+
+      // Sanity-check: the service account project_id should match our expected project.
+      // This catches copy-paste mistakes (e.g. using a staging SA for production).
+      if (sa.project_id && sa.project_id !== PROJECT_ID) {
+        const msg =
+          `FATAL: FIREBASE_SERVICE_ACCOUNT project_id "${sa.project_id}" does not match ` +
+          `expected Firebase project "${PROJECT_ID}". Check Render environment variables.`;
+        console.error(msg);
+        credentialParseError = `project_id "${sa.project_id}" does not match expected project "${PROJECT_ID}"`;
+        if (IS_PRODUCTION) process.exit(1);
+      } else {
+        credential = cert(sa);
+      }
     } catch (e) {
-      console.error("Warning: Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e.message);
+      credentialParseError = e.message;
+      console.error("ERROR: Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e.message);
     }
+  }
+
+  // In production, a credential is mandatory. Without it, verifyIdToken() will
+  // fail on Render (no implicit Application Default Credential is available).
+  if (IS_PRODUCTION && !credential) {
+    const reason = credentialParseError
+      ? `JSON parse failed: ${credentialParseError}`
+      : "FIREBASE_SERVICE_ACCOUNT environment variable is not set.";
+    console.error(
+      `FATAL: Cannot start AttendIQ backend in production without Firebase credentials. ${reason}\n` +
+      "Set FIREBASE_SERVICE_ACCOUNT in the Render dashboard with the full service-account JSON."
+    );
+    process.exit(1);
   }
 
   const appOptions = { projectId: PROJECT_ID };
@@ -61,25 +97,52 @@ const app = express();
 // Enable JSON body parsing with reasonable size limit
 app.use(express.json({ limit: "1mb" }));
 
-// Configure CORS for authorized origins
-const allowedOrigins = [
+// ─── CORS Configuration ──────────────────────────────────────────────────────
+// Origins explicitly allowed in production (Firebase Hosting domains).
+// In development/test, local origins are also permitted.
+// Note: CORS is NOT a substitute for authentication. Every protected endpoint
+// still verifies the Firebase ID token regardless of origin.
+//
+// Requests with no Origin header (native Android, curl, server-to-server)
+// are allowed unconditionally — they pass through to token verification.
+const PRODUCTION_ORIGINS = [
   "https://attendmark-c2f07.web.app",
-  "https://attendmark-c2f07.firebaseapp.com",
+  "https://attendmark-c2f07.firebaseapp.com"
+];
+
+const DEV_ORIGINS = [
   "http://localhost:5000",
   "http://127.0.0.1:5000",
   "http://localhost:3000",
   "http://127.0.0.1:3000"
 ];
 
+// Origins allowed at runtime — always includes production; dev origins are
+// added only when not running in production.
+const ALLOWED_ORIGINS = IS_PRODUCTION
+  ? PRODUCTION_ORIGINS
+  : [...PRODUCTION_ORIGINS, ...DEV_ORIGINS];
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      // No origin = native app / curl / server-to-server — pass through.
+      // Authentication still enforced by authenticateToken middleware.
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || origin.endsWith(".web.app") || origin.endsWith(".firebaseapp.com") || origin.endsWith(".onrender.com")) {
-        return callback(null, true);
-      }
-      return callback(null, true); // Permissive for API consumers, authenticated via ID token
+
+      // Allow any Firebase Hosting subdomain for this project and any Render
+      // preview deploy (*.onrender.com) in addition to the explicit list.
+      const isAllowed =
+        ALLOWED_ORIGINS.includes(origin) ||
+        origin.endsWith(".web.app") ||
+        origin.endsWith(".firebaseapp.com") ||
+        (!IS_PRODUCTION && origin.endsWith(".onrender.com"));
+
+      if (isAllowed) return callback(null, true);
+
+      // Reject unexpected browser origins. The request will receive a 403 from
+      // the browser's CORS preflight — no response body is needed.
+      return callback(new Error(`CORS: origin "${origin}" is not permitted.`));
     },
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],

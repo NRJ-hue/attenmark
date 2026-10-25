@@ -85,7 +85,31 @@ async function bootstrapProfileCore(db, authContext, data = {}) {
     createdAt: Date.now()
   };
 
-  await userRef.set(newProfile);
+  // Use create() instead of set() to make first-time profile creation atomic.
+  // If two simultaneous first-login requests both pass the userDoc.exists check,
+  // the second create() will fail with ALREADY_EXISTS rather than overwriting.
+  // On that error we read and return the document the first caller created,
+  // preserving all its fields and returning isNew: false to signal no creation.
+  try {
+    await userRef.create(newProfile);
+  } catch (createErr) {
+    // Firestore ALREADY_EXISTS error (gRPC code 6)
+    if (createErr.code === 6 || (createErr.message || "").includes("ALREADY_EXISTS")) {
+      const existingDoc = await userRef.get();
+      if (existingDoc.exists) {
+        const existing = existingDoc.data();
+        return {
+          uid,
+          email: existing.email || email,
+          name: existing.name || name,
+          role: existing.role || assignedRole,
+          isNew: false
+        };
+      }
+    }
+    // Any other Firestore error is unexpected — re-throw.
+    throw createErr;
+  }
 
   return {
     uid,

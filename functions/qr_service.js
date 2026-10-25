@@ -78,7 +78,11 @@ async function startAttendanceSessionCore(db, authContext, data) {
   const startedAt = Date.now();
   const expiresAt = startedAt + durationMinutes * 60 * 1000;
 
-  // Determine geofence radius: 100m in local demo / emulator mode, 50m in production
+  // Determine geofence radius: 100m in local demo / emulator mode, 50m in production.
+  // The effective radius is derived from trusted server configuration only.
+  // A client-supplied geofenceRadiusMeters is accepted solely as a downward
+  // adjustment (e.g. a smaller lab). It is clamped to the server-configured
+  // maximum so a faculty token cannot inflate the radius to bypass GPS verification.
   const isDemoMode = Boolean(
     process.env.FUNCTIONS_EMULATOR === "true" ||
     process.env.FIRESTORE_EMULATOR_HOST ||
@@ -86,13 +90,20 @@ async function startAttendanceSessionCore(db, authContext, data) {
     process.env.NODE_ENV === "test" ||
     config.isDemoMode
   );
-  const defaultRadius = isDemoMode ? config.DEMO_GEOFENCE_RADIUS_METERS : config.PRODUCTION_GEOFENCE_RADIUS_METERS;
-  const callerRadius = (data && typeof data.geofenceRadiusMeters === "number" && data.geofenceRadiusMeters > 0)
-    ? data.geofenceRadiusMeters
-    : (data && data.location && typeof data.location.geofenceRadiusMeters === "number" && data.location.geofenceRadiusMeters > 0)
-      ? data.location.geofenceRadiusMeters
-      : null;
-  const geofenceRadiusMeters = callerRadius !== null ? callerRadius : defaultRadius;
+  const serverDefaultRadius = isDemoMode ? config.DEMO_GEOFENCE_RADIUS_METERS : config.PRODUCTION_GEOFENCE_RADIUS_METERS;
+
+  // Parse a caller-supplied override (must be a positive number).
+  const rawCallerRadius =
+    (data && typeof data.geofenceRadiusMeters === "number" && data.geofenceRadiusMeters > 0)
+      ? data.geofenceRadiusMeters
+      : (data && data.location && typeof data.location.geofenceRadiusMeters === "number" && data.location.geofenceRadiusMeters > 0)
+        ? data.location.geofenceRadiusMeters
+        : null;
+
+  // Clamp: caller cannot exceed the server-configured maximum for this environment.
+  const geofenceRadiusMeters = rawCallerRadius !== null
+    ? Math.min(rawCallerRadius, serverDefaultRadius)
+    : serverDefaultRadius;
 
   const sessionPayload = {
     sessionId,
@@ -186,19 +197,31 @@ async function stopAttendanceSessionCore(db, authContext, data) {
   const stoppedAt = Date.now();
   const sessionId = sessionData.sessionId;
 
+  // Guard: the active session pointer must carry a valid sessionId so we can
+  // mark the corresponding historical attendance_sessions record inactive too.
+  // A missing sessionId would leave attendance_sessions/{sessionId}.isActive === true,
+  // which would allow stale QR tokens to validate even after the session is
+  // nominally stopped. Treat this as a data-consistency error rather than
+  // silently reporting success with a partial update.
+  if (!sessionId) {
+    throw new ServiceError(
+      "failed-precondition",
+      `Session record for course ${courseCode} is missing an authoritative sessionId. ` +
+      "The session data may be corrupt. Contact an administrator to resolve the inconsistency."
+    );
+  }
+
   const batch = db.batch();
   batch.update(sessionRef, {
     isActive: false,
     stoppedAt
   });
 
-  if (sessionId) {
-    const historicalRef = db.collection("attendance_sessions").doc(sessionId);
-    batch.update(historicalRef, {
-      isActive: false,
-      stoppedAt
-    });
-  }
+  const historicalRef = db.collection("attendance_sessions").doc(sessionId);
+  batch.update(historicalRef, {
+    isActive: false,
+    stoppedAt
+  });
 
   await batch.commit();
 
