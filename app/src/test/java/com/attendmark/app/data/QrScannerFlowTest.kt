@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import com.attendmark.app.ui.screens.student.QrCodeAnalyzer
 import org.junit.Test
 import java.util.UUID
 
@@ -81,29 +82,141 @@ class QrScannerFlowTest {
         assertTrue(QrValidationService.validateTokenPayload(jsonPayload) is TokenFormatResult.Invalid)
     }
 
-    // ─── 2. Duplicate Camera Detection Guard (In-flight lock) ─────────────────────
+    // ─── 2. Duplicate Camera Detection Guard & Coordinator Lifecycle ────────────
 
     @Test
-    fun duplicateDetection_inFlightLockDropsRapidSuccessiveFrames() {
-        var isProcessing = false
+    fun duplicateDetection_coordinatorDropsRapidSuccessiveFrames() {
+        val coordinator = QrScanCoordinator()
         var networkCallsInitiated = 0
 
-        // Simulate 20 rapid CameraX image analysis frames with the exact same QR
-        for (frame in 1..20) {
+        // Simulate 50 rapid CameraX image analysis frames with the exact same QR
+        for (frame in 1..50) {
             val formatResult = QrValidationService.validateTokenPayload(valid64HexToken)
             if (formatResult is TokenFormatResult.Valid) {
-                if (!isProcessing) {
-                    isProcessing = true
+                if (coordinator.startScanAttempt(formatResult.token)) {
                     networkCallsInitiated++
-                    // Async network request is now in-flight...
-                } else {
-                    // Frame dropped while request in-flight
                 }
             }
         }
 
         assertEquals(1, networkCallsInitiated)
-        assertTrue(isProcessing)
+        assertEquals(ScanState.VALIDATING, coordinator.state)
+        assertEquals(valid64HexToken, coordinator.currentToken)
+    }
+
+    @Test
+    fun duplicateDetection_secondQrDuringActiveRequestIsDropped() {
+        val coordinator = QrScanCoordinator()
+        val token1 = valid64HexToken
+        val token2 = "b1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890"
+
+        // First detection claims scan slot
+        val firstClaimed = coordinator.startScanAttempt(token1)
+        assertTrue(firstClaimed)
+        assertEquals(ScanState.VALIDATING, coordinator.state)
+
+        // Second detection arrives while first is in-flight
+        val secondClaimed = coordinator.startScanAttempt(token2)
+        assertFalse(secondClaimed)
+        assertEquals(ScanState.VALIDATING, coordinator.state)
+        assertEquals(token1, coordinator.currentToken)
+    }
+
+    @Test
+    fun singleNavigationGuard_successNavigatesOrAdvancesOnlyOnce() {
+        val coordinator = QrScanCoordinator()
+        coordinator.startScanAttempt(valid64HexToken)
+
+        var navigationEvents = 0
+        for (i in 1..10) {
+            if (coordinator.onValidationSuccess()) {
+                navigationEvents++
+            }
+        }
+
+        assertEquals(1, navigationEvents)
+        assertEquals(ScanState.SUCCESS, coordinator.state)
+    }
+
+    @Test
+    fun validationFailure_producesOneStableErrorStateRatherThanRepeatedMessageUpdates() {
+        val coordinator = QrScanCoordinator()
+        coordinator.startScanAttempt(valid64HexToken)
+
+        val expectedErrorMessage = "QR code expired. Please point camera at the freshly rotated code on the projector."
+        coordinator.onValidationFailure(expectedErrorMessage)
+
+        assertEquals(ScanState.ERROR, coordinator.state)
+        assertEquals(expectedErrorMessage, coordinator.errorMessage)
+
+        // Simulate 30 subsequent camera frames arriving while error is displayed
+        for (frame in 1..30) {
+            val accepted = coordinator.startScanAttempt(valid64HexToken)
+            assertFalse(accepted)
+        }
+
+        // Error state and message remain completely stable without flickering
+        assertEquals(ScanState.ERROR, coordinator.state)
+        assertEquals(expectedErrorMessage, coordinator.errorMessage)
+    }
+
+    @Test
+    fun retryableFailure_allowsUserToScanAgainWithDeliberateRetry() {
+        val coordinator = QrScanCoordinator()
+        coordinator.startScanAttempt(valid64HexToken)
+        coordinator.onValidationFailure("Network or connection error")
+        assertEquals(ScanState.ERROR, coordinator.state)
+        assertFalse(coordinator.canScan())
+
+        // User deliberately taps "Try Again"
+        val retryAccepted = coordinator.retry()
+        assertTrue(retryAccepted)
+        assertEquals(ScanState.IDLE, coordinator.state)
+        assertTrue(coordinator.canScan())
+
+        // Camera detects next rotated token
+        val newRotatedToken = "c1c2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890"
+        val newAttemptClaimed = coordinator.startScanAttempt(newRotatedToken)
+        assertTrue(newAttemptClaimed)
+        assertEquals(ScanState.VALIDATING, coordinator.state)
+        assertEquals(newRotatedToken, coordinator.currentToken)
+    }
+
+    @Test
+    fun cameraResourceManagement_imageProxyIsClosedOnEarlyReturnAndPaused() {
+        class FakeImageProxy : androidx.camera.core.ImageProxy {
+            var isClosed = false
+                private set
+
+            override fun close() {
+                isClosed = true
+            }
+
+            override fun getCropRect(): android.graphics.Rect = throw NotImplementedError()
+            override fun setCropRect(rect: android.graphics.Rect?) {}
+            override fun getFormat(): Int = 0
+            override fun getHeight(): Int = 0
+            override fun getWidth(): Int = 0
+            override fun getPlanes(): Array<androidx.camera.core.ImageProxy.PlaneProxy> = emptyArray()
+            override fun getImageInfo(): androidx.camera.core.ImageInfo = throw NotImplementedError()
+            override fun getImage(): android.media.Image? = null
+        }
+
+        val analyzer = QrCodeAnalyzer {}
+
+        // Case A: When paused, analyze immediately closes proxy without processing
+        analyzer.pauseScanning()
+        assertTrue(analyzer.isScanningPaused())
+        val proxy1 = FakeImageProxy()
+        analyzer.analyze(proxy1)
+        assertTrue(proxy1.isClosed)
+
+        // Case B: When resumed, null mediaImage safely closes proxy
+        analyzer.resumeScanning()
+        assertFalse(analyzer.isScanningPaused())
+        val proxy2 = FakeImageProxy()
+        analyzer.analyze(proxy2)
+        assertTrue(proxy2.isClosed)
     }
 
     // ─── 3. Callable Error Mapping ────────────────────────────────────────────────

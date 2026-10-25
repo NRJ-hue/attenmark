@@ -43,7 +43,9 @@ import androidx.core.content.ContextCompat
 import com.attendmark.app.data.FirestoreRepository
 import com.attendmark.app.data.QrValidationResult
 import com.attendmark.app.data.QrValidationService
+import com.attendmark.app.data.QrScanCoordinator
 import com.attendmark.app.data.TokenFormatResult
+import java.util.concurrent.atomic.AtomicBoolean
 import com.attendmark.app.ui.theme.DarkBackground
 import com.attendmark.app.ui.theme.PrimaryBlue
 import com.attendmark.app.ui.theme.PrimaryBlueLight
@@ -121,6 +123,8 @@ fun QrScannerScreen(
     }
 
     // Scanner state
+    val coordinator = remember { QrScanCoordinator() }
+    val hasNavigated = remember { AtomicBoolean(false) }
     var isProcessing by remember { mutableStateOf(false) }
     var validationErrorMessage by remember { mutableStateOf<String?>(null) }
     var statusInfo by remember { mutableStateOf<String?>(null) }
@@ -131,6 +135,7 @@ fun QrScannerScreen(
     DisposableEffect(Unit) {
         onDispose {
             try {
+                coordinator.reset()
                 analyzerRef?.close()
                 cameraExecutor.shutdown()
             } catch (e: Exception) {
@@ -287,12 +292,19 @@ fun QrScannerScreen(
                                             .build()
 
                                         val analyzer = QrCodeAnalyzer { rawQrString ->
-                                            if (isProcessing) return@QrCodeAnalyzer
+                                            // Coordinate single active scan attempt
+                                            if (!coordinator.startScanAttempt(rawQrString)) {
+                                                return@QrCodeAnalyzer
+                                            }
 
                                             // Validate token format locally before network call
                                             when (val formatResult = QrValidationService.validateTokenPayload(rawQrString)) {
                                                 is TokenFormatResult.Invalid -> {
+                                                    coordinator.onValidationFailure(formatResult.reason)
+                                                    isProcessing = false
+                                                    statusInfo = null
                                                     validationErrorMessage = formatResult.reason
+                                                    // analyzerRef remains paused to hold stable error state
                                                     return@QrCodeAnalyzer
                                                 }
                                                 is TokenFormatResult.Valid -> {
@@ -310,50 +322,69 @@ fun QrScannerScreen(
 
                                                         when (result) {
                                                             is QrValidationResult.Success -> {
+                                                                coordinator.onValidationSuccess()
                                                                 statusInfo = "Token verified! Starting biometric flow..."
-                                                                onScanSuccess(result.sessionId)
+                                                                if (hasNavigated.compareAndSet(false, true)) {
+                                                                    analyzerRef?.pauseScanning()
+                                                                    onScanSuccess(result.sessionId)
+                                                                }
                                                             }
                                                             is QrValidationResult.Expired -> {
+                                                                val msg = "QR code expired. Please point camera at the freshly rotated code on the projector."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "QR code expired. Please point camera at the freshly rotated code on the projector."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.SessionInactive -> {
+                                                                val msg = "Attendance session has ended or is no longer active."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "Attendance session has ended or is no longer active."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.AlreadyRecorded -> {
+                                                                val msg = "Your attendance has already been recorded for this session."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "Your attendance has already been recorded for this session."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.RetriesExhausted -> {
+                                                                val msg = "Maximum verification attempts reached (2 of 2). Please submit a manual request to your instructor."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "Maximum verification attempts reached (2 of 2). Please submit a manual request to your instructor."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.PermissionDenied -> {
+                                                                coordinator.onValidationFailure(result.message)
                                                                 isProcessing = false
                                                                 statusInfo = null
                                                                 validationErrorMessage = result.message
                                                             }
                                                             is QrValidationResult.NotAuthenticated -> {
+                                                                val msg = "You must be logged in to validate attendance."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "You must be logged in to validate attendance."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.NotFound -> {
+                                                                val msg = "Invalid QR code. Please scan the current code displayed on the faculty screen."
+                                                                coordinator.onValidationFailure(msg)
                                                                 isProcessing = false
                                                                 statusInfo = null
-                                                                validationErrorMessage = "Invalid QR code. Please scan the current code displayed on the faculty screen."
+                                                                validationErrorMessage = msg
                                                             }
                                                             is QrValidationResult.InvalidArgument -> {
+                                                                coordinator.onValidationFailure(result.message)
                                                                 isProcessing = false
                                                                 statusInfo = null
                                                                 validationErrorMessage = result.message
                                                             }
                                                             is QrValidationResult.Error -> {
+                                                                coordinator.onValidationFailure(result.message)
                                                                 isProcessing = false
                                                                 statusInfo = null
                                                                 validationErrorMessage = result.message
@@ -509,7 +540,10 @@ fun QrScannerScreen(
                                     ) {
                                         TextButton(onClick = {
                                             validationErrorMessage = null
+                                            statusInfo = null
                                             isProcessing = false
+                                            coordinator.retry()
+                                            analyzerRef?.resumeScanning()
                                         }) {
                                             Text("Try Again", color = PrimaryBlueLight)
                                         }
