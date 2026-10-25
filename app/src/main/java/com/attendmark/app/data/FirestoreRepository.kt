@@ -62,6 +62,10 @@ class FirestoreRepository {
                     return@addOnSuccessListener
                 }
                 val doc = snapshot.documents.first()
+                if (doc.getBoolean("isArchived") == true) {
+                    onFailure("This course has been archived by the instructor and is not accepting enrollments.")
+                    return@addOnSuccessListener
+                }
                 val courseId = doc.id
                 @Suppress("UNCHECKED_CAST")
                 val enrolled = (doc.get("enrolledStudents") as? List<String> ?: emptyList()).toMutableList()
@@ -80,6 +84,15 @@ class FirestoreRepository {
                     .addOnFailureListener { e -> onFailure(e.message ?: "Failed to join.") }
             }
             .addOnFailureListener { e -> onFailure(e.message ?: "Failed to find course.") }
+    }
+
+    suspend fun leaveCourse(classCode: String): Result<Boolean> {
+        val payload = hashMapOf<String, Any?>("courseCode" to classCode)
+        val res = BackendApiClient.post("leaveCourse", payload)
+        if (res.isSuccess) {
+            return Result.success(true)
+        }
+        return Result.failure(res.exceptionOrNull() ?: Exception("Failed to leave course."))
     }
 
     fun getCoursesForFaculty(
@@ -287,11 +300,12 @@ class FirestoreRepository {
      * or self-assign APPROVED status.
      */
     fun submitManualRequest(record: AttendanceRecord, onSuccess: () -> Unit, onFailure: (Exception) -> Unit) {
-        val docId = if (record.sessionId.isNotBlank() && record.studentUid.isNotBlank()) {
-            "${record.sessionId}_${record.studentUid}"
-        } else {
-            record.id
+        if (record.sessionId.isBlank() || record.studentUid.isBlank() || record.courseCode.isBlank()) {
+            onFailure(IllegalArgumentException("Cannot submit manual request: sessionId, studentUid, and courseCode are strictly required."))
+            return
         }
+
+        val docId = "${record.sessionId}_${record.studentUid}"
 
         val requestMap = hashMapOf(
             "id" to docId,

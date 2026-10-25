@@ -584,6 +584,18 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
     const sessionId = "session-manual-test";
     const manualDocId = `${sessionId}_student-uid-1`;
 
+    beforeEach(async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_sessions/${sessionId}`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          facultyEmail: "faculty@test.com",
+          isActive: true
+        });
+      });
+    });
+
     it("ALLOWS student to submit an unverified manual request with status REVIEW and isQrVerified=false", async function () {
       const studentCtx = testEnv.authenticatedContext("student-uid-1", {
         email: "student1@test.com"
@@ -603,6 +615,106 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           isQrVerified: false,
           overallScore: 0,
           rejectionReason: "Camera broken, unable to scan QR",
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student attempting to submit a manual request with non-existent or fabricated sessionId", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+      const fakeSessionId = "manual_CS101_" + Date.now();
+      const fakeDocId = `${fakeSessionId}_student-uid-1`;
+
+      await assertFails(
+        setDoc(doc(studentDb, `manual_attendance_requests/${fakeDocId}`), {
+          id: fakeDocId,
+          sessionId: fakeSessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          studentName: "Alice",
+          courseCode: "CS101",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: 0,
+          rejectionReason: "Fabricated session ID test",
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student attempting to submit a manual request where sessionId belongs to another course", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, "attendance_sessions/session-math-201"), {
+          sessionId: "session-math-201",
+          courseCode: "MATH201",
+          facultyEmail: "math_prof@test.com",
+          isActive: true
+        });
+      });
+
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+      const crossDocId = "session-math-201_student-uid-1";
+
+      await assertFails(
+        setDoc(doc(studentDb, `manual_attendance_requests/${crossDocId}`), {
+          id: crossDocId,
+          sessionId: "session-math-201",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          studentName: "Alice",
+          courseCode: "CS101", // Mismatched courseCode!
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: 0,
+          rejectionReason: "Cross-course session mismatch test",
+          timestamp: Date.now()
+        })
+      );
+    });
+
+    it("DENIES student attempting to submit an invalid overallScore (< 0 or > 100 or non-integer)", async function () {
+      const studentCtx = testEnv.authenticatedContext("student-uid-1", {
+        email: "student1@test.com"
+      });
+      const studentDb = studentCtx.firestore();
+
+      // Negative score
+      await assertFails(
+        setDoc(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+          id: manualDocId,
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: -10,
+          timestamp: Date.now()
+        })
+      );
+
+      // Score > 100
+      await assertFails(
+        setDoc(doc(studentDb, `manual_attendance_requests/${manualDocId}`), {
+          id: manualDocId,
+          sessionId: sessionId,
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          courseCode: "CS101",
+          status: "REVIEW",
+          matchResult: "MANUAL_REQUEST",
+          isQrVerified: false,
+          overallScore: 150,
           timestamp: Date.now()
         })
       );

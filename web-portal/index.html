@@ -139,8 +139,59 @@
         </button>
       </div>
 
+      <div class="table-header-tabs" style="margin-bottom: 1.5rem;">
+        <button type="button" class="tab-btn active" id="tab-courses-active" data-course-filter="active">
+          Active Courses (<span id="count-courses-active">0</span>)
+        </button>
+        <button type="button" class="tab-btn" id="tab-courses-archived" data-course-filter="archived">
+          Archived Courses (<span id="count-courses-archived">0</span>)
+        </button>
+      </div>
+
       <div id="courses-grid" class="courses-grid">
         <!-- Rendered dynamically -->
+      </div>
+
+      <!-- Persistent Faculty Manual Requests View -->
+      <div id="dashboard-manual-panel" class="dashboard-manual-panel" style="margin-top: 2.5rem;">
+        <div class="section-header" style="margin-bottom: 1rem;">
+          <div class="section-title">
+            <h2 style="font-size: 1.4rem;">Manual Attendance Requests</h2>
+            <p>Review and decide student manual attendance requests across your courses.</p>
+          </div>
+          <div class="table-header-tabs" style="margin-bottom: 0;">
+            <button type="button" class="tab-btn active" id="tab-dash-manual-pending" data-dash-tab="pending">
+              Pending (<span id="dash-manual-pending-count">0</span>)
+            </button>
+            <button type="button" class="tab-btn" id="tab-dash-manual-all" data-dash-tab="all">
+              All History (<span id="dash-manual-all-count">0</span>)
+            </button>
+          </div>
+        </div>
+
+        <div class="table-panel" style="background: var(--bg-surface); border-radius: 12px; border: 1px solid var(--border-color); overflow: hidden;">
+          <div style="overflow-x: auto;">
+            <table class="records-table">
+              <thead>
+                <tr>
+                  <th>Course</th>
+                  <th>Student Name</th>
+                  <th>Email</th>
+                  <th>Reason / Note</th>
+                  <th>Submitted At</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="dashboard-manual-table-body">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+          <div id="dashboard-manual-empty" class="empty-state" style="display: none; padding: 2.5rem; text-align: center; color: var(--text-muted);">
+            No manual attendance requests found.
+          </div>
+        </div>
       </div>
     </section>
 

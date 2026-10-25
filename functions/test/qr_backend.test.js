@@ -355,7 +355,7 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       assert.strictEqual(typeof response.tokenId, "string");
       assert.strictEqual(response.tokenId.length, 64, "Token should be 32 hex bytes (64 chars)");
       assert.strictEqual(response.validityMs, 30000);
-      assert.strictEqual(response.refreshIntervalMs, 25000);
+      assert.strictEqual(response.refreshIntervalMs, 30000);
       assert.ok(response.expiresAt > Date.now(), "Token expiry must be in the future");
 
       // Verify token is stored in Firestore
@@ -460,6 +460,7 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
         issuedAt: now - 26000,
         expiresAt: now + 4000
       });
+      await db.collection("sessions").doc(COURSE_CODE).update({ currentTokenId: boundaryTokenId });
 
       const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
       const res = await validateQrTokenCore(db, studentAuth, {
@@ -468,6 +469,57 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
         sessionId: activeSessionId
       });
       assert.strictEqual(res.valid, true);
+    });
+
+    it("rejects previous QR token immediately once replacement QR is generated", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const firstTokenId = validTokenId;
+
+      // Faculty generates replacement token
+      const replacementRes = await generateQrTokenCore(db, facultyAuth, { courseCode: COURSE_CODE });
+      const newTokenId = replacementRes.tokenId;
+      assert.notStrictEqual(firstTokenId, newTokenId);
+
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+
+      // Attempting to validate the previous replaced token must fail with deadline-exceeded
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: firstTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
+        }),
+        (err) => err.code === "deadline-exceeded" && err.message.includes("rotated")
+      );
+
+      // But the new active token succeeds
+      const newRes = await validateQrTokenCore(db, studentAuth, {
+        tokenId: newTokenId,
+        courseCode: COURSE_CODE,
+        sessionId: activeSessionId
+      });
+      assert.strictEqual(newRes.valid, true);
+    });
+
+    it("safely handles concurrent token generation and validation", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const student1Auth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+
+      const [tokenRes, validationResult] = await Promise.allSettled([
+        generateQrTokenCore(db, facultyAuth, { courseCode: COURSE_CODE }),
+        validateQrTokenCore(db, student1Auth, {
+          tokenId: validTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
+        })
+      ]);
+
+      assert.strictEqual(tokenRes.status, "fulfilled");
+      if (validationResult.status === "rejected") {
+        assert.strictEqual(validationResult.reason.code, "deadline-exceeded");
+      } else {
+        assert.strictEqual(validationResult.value.valid, true);
+      }
     });
 
     it("rejects token past the 30s validity window (31s after issue) with deadline-exceeded", async function () {

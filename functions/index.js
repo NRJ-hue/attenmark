@@ -16,6 +16,11 @@ const {
   recordVerificationFailureCore
 } = require("./qr_service");
 const { bootstrapProfileCore } = require("./profile_service");
+const {
+  leaveCourseCore,
+  archiveCourseCore,
+  unarchiveCourseCore
+} = require("./course_service");
 
 /**
  * Normalizes parameters for Callable functions across Firebase Functions 1st gen and 2nd gen.
@@ -153,6 +158,57 @@ exports.bootstrapProfile = functions.https.onCall(async (request, response) => {
       throw new functions.https.HttpsError(err.code, err.message);
     }
     console.error("Unexpected error in bootstrapProfile:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: leaveCourse
+ * Callable by authenticated student to leave an enrolled course.
+ */
+exports.leaveCourse = functions.https.onCall(async (request, response) => {
+  try {
+    const { data, authContext } = extractCallableParams(request, response);
+    return await leaveCourseCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in leaveCourse:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: archiveCourse
+ * Callable by authenticated faculty to archive an owned course.
+ */
+exports.archiveCourse = functions.https.onCall(async (request, response) => {
+  try {
+    const { data, authContext } = extractCallableParams(request, response);
+    return await archiveCourseCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in archiveCourse:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: unarchiveCourse
+ * Callable by authenticated faculty to unarchive an owned course.
+ */
+exports.unarchiveCourse = functions.https.onCall(async (request, response) => {
+  try {
+    const { data, authContext } = extractCallableParams(request, response);
+    return await unarchiveCourseCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in unarchiveCourse:", err);
     throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
   }
 });

@@ -27,17 +27,21 @@ import {
 // ─── Application State ────────────────────────────────────────────────────────
 let currentFacultyUser = null;
 let courses = [];
+let courseFilter = "active";
 let currentCourse = null;
 let activeSession = null;
 let attendanceRecords = [];
 let manualRequests = [];
+let allFacultyManualRequests = [];
 let currentTab = "all";
+let dashManualTab = "pending";
 
 let qrRotationTimer = null;
 let qrCountdownInterval = null;
 let sessionDurationInterval = null;
 let recordsUnsubscribe = null;
 let manualRequestsUnsubscribe = null;
+let dashManualUnsubscribe = null;
 let coursesUnsubscribe = null;
 let qrCodeInstance = null;
 let currentRejectIsManual = false;
@@ -78,6 +82,17 @@ const facultyDisplayEmail = document.getElementById("faculty-display-email");
 const btnLogout = document.getElementById("btn-logout");
 
 const coursesGrid = document.getElementById("courses-grid");
+const tabCoursesActive = document.getElementById("tab-courses-active");
+const tabCoursesArchived = document.getElementById("tab-courses-archived");
+const countCoursesActive = document.getElementById("count-courses-active");
+const countCoursesArchived = document.getElementById("count-courses-archived");
+
+const tabDashManualPending = document.getElementById("tab-dash-manual-pending");
+const tabDashManualAll = document.getElementById("tab-dash-manual-all");
+const dashManualPendingCount = document.getElementById("dash-manual-pending-count");
+const dashManualAllCount = document.getElementById("dash-manual-all-count");
+const dashboardManualTableBody = document.getElementById("dashboard-manual-table-body");
+const dashboardManualEmpty = document.getElementById("dashboard-manual-empty");
 const btnOpenCreateCourse = document.getElementById("btn-open-create-course");
 const modalCreateCourse = document.getElementById("modal-create-course");
 const formCreateCourse = document.getElementById("form-create-course");
@@ -333,6 +348,8 @@ onAuthStateChanged(auth, async (user) => {
     btnLogout.style.display = "none";
     cleanUpActiveSession();
     if (coursesUnsubscribe) coursesUnsubscribe();
+    if (dashManualUnsubscribe) dashManualUnsubscribe();
+    allFacultyManualRequests = [];
     if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
     switchView("login");
   }
@@ -452,6 +469,7 @@ function listenToFacultyCourses() {
   coursesUnsubscribe = onSnapshot(q, (snapshot) => {
     courses = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderCoursesGrid();
+    listenToAllFacultyManualRequests();
   }, (err) => {
     console.error("Error listening to courses:", err);
   });
@@ -460,42 +478,241 @@ function listenToFacultyCourses() {
 function renderCoursesGrid() {
   coursesGrid.innerHTML = "";
 
-  if (courses.length === 0) {
+  const activeCourses = courses.filter((c) => !c.isArchived);
+  const archivedCourses = courses.filter((c) => c.isArchived === true);
+
+  if (countCoursesActive) countCoursesActive.textContent = activeCourses.length;
+  if (countCoursesArchived) countCoursesArchived.textContent = archivedCourses.length;
+
+  const displayCourses = courseFilter === "archived" ? archivedCourses : activeCourses;
+
+  if (displayCourses.length === 0) {
+    const emptyMsg = courseFilter === "archived"
+      ? "No archived courses."
+      : "No active courses assigned yet.";
+
     coursesGrid.innerHTML = `
       <div style="grid-column: 1 / -1; text-align: center; padding: 3rem; background: var(--bg-surface); border-radius: 12px; border: 1px dashed var(--border-color);">
-        <p style="color: var(--text-muted); margin-bottom: 1rem;">No courses assigned yet.</p>
-        <button class="btn btn-primary btn-sm" onclick="document.getElementById('btn-open-create-course').click()">Create First Course</button>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">${emptyMsg}</p>
+        ${courseFilter === "active" ? `<button class="btn btn-primary btn-sm" onclick="document.getElementById('btn-open-create-course').click()">Create First Course</button>` : ""}
       </div>
     `;
     return;
   }
 
-  courses.forEach((course) => {
+  displayCourses.forEach((course) => {
     const card = document.createElement("div");
     card.className = "course-card";
     const enrolledCount = (course.enrolledStudents || []).length;
+    const isArchived = course.isArchived === true;
 
     card.innerHTML = `
       <div>
         <div class="course-card-top">
           <span class="course-code-pill">${escapeHtml(course.classCode)}</span>
           <span style="font-size: 0.8rem; color: var(--text-muted);">${enrolledCount} Students</span>
+          ${isArchived ? `<span class="badge badge-unsubmitted" style="margin-left: 0.4rem;">Archived</span>` : ""}
         </div>
         <div class="course-name">${escapeHtml(course.name)}</div>
         <div class="course-meta">
           <span>👨‍🏫 ${escapeHtml(course.facultyEmail)}</span>
         </div>
       </div>
-      <button class="btn btn-primary btn-sm" style="width: 100%; margin-top: 1rem;">
-        Manage Attendance Session →
-      </button>
+      <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+        ${!isArchived ? `
+          <button class="btn btn-primary btn-sm btn-manage-session" style="flex: 1;">
+            Manage Attendance Session →
+          </button>
+          <button class="btn btn-outline btn-sm btn-archive-course" title="Archive Course" style="color: #f87171; border-color: rgba(248,113,113,0.3);">
+            Archive
+          </button>
+        ` : `
+          <button class="btn btn-outline btn-sm btn-unarchive-course" style="flex: 1; color: #38bdf8; border-color: rgba(56,189,248,0.3);">
+            ↺ Unarchive Course
+          </button>
+        `}
+      </div>
     `;
 
-    card.querySelector("button").addEventListener("click", () => {
-      openCourseSession(course);
-    });
+    const btnManage = card.querySelector(".btn-manage-session");
+    if (btnManage) {
+      btnManage.addEventListener("click", () => {
+        openCourseSession(course);
+      });
+    }
+
+    const btnArchive = card.querySelector(".btn-archive-course");
+    if (btnArchive) {
+      btnArchive.addEventListener("click", async () => {
+        if (!confirm(`Are you sure you want to archive course "${course.name}" (${course.classCode})?\n\nAny active attendance session will be stopped immediately. Historical records are preserved.`)) {
+          return;
+        }
+        btnArchive.disabled = true;
+        btnArchive.textContent = "Archiving...";
+        try {
+          await callBackendApi("archiveCourse", { courseCode: course.classCode });
+        } catch (err) {
+          console.error("Archive course failed:", err);
+          alert("Could not archive course: " + (err.message || "Failed to archive."));
+        } finally {
+          btnArchive.disabled = false;
+          btnArchive.textContent = "Archive";
+        }
+      });
+    }
+
+    const btnUnarchive = card.querySelector(".btn-unarchive-course");
+    if (btnUnarchive) {
+      btnUnarchive.addEventListener("click", async () => {
+        if (!confirm(`Unarchive course "${course.name}" (${course.classCode})?`)) {
+          return;
+        }
+        btnUnarchive.disabled = true;
+        btnUnarchive.textContent = "Restoring...";
+        try {
+          await callBackendApi("unarchiveCourse", { courseCode: course.classCode });
+        } catch (err) {
+          console.error("Unarchive course failed:", err);
+          alert("Could not unarchive course: " + (err.message || "Failed to unarchive."));
+        } finally {
+          btnUnarchive.disabled = false;
+          btnUnarchive.textContent = "↺ Unarchive Course";
+        }
+      });
+    }
 
     coursesGrid.appendChild(card);
+  });
+}
+
+// Course Filter Tab Listeners
+if (tabCoursesActive) {
+  tabCoursesActive.addEventListener("click", () => {
+    courseFilter = "active";
+    tabCoursesActive.classList.add("active");
+    if (tabCoursesArchived) tabCoursesArchived.classList.remove("active");
+    renderCoursesGrid();
+  });
+}
+
+if (tabCoursesArchived) {
+  tabCoursesArchived.addEventListener("click", () => {
+    courseFilter = "archived";
+    tabCoursesArchived.classList.add("active");
+    if (tabCoursesActive) tabCoursesActive.classList.remove("active");
+    renderCoursesGrid();
+  });
+}
+
+// ─── 2B. Persistent Faculty Manual Requests View ──────────────────────────────
+function listenToAllFacultyManualRequests() {
+  if (!currentFacultyUser) return;
+  if (dashManualUnsubscribe) dashManualUnsubscribe();
+
+  const courseCodes = courses.map((c) => c.classCode);
+  if (courseCodes.length === 0) {
+    allFacultyManualRequests = [];
+    renderDashboardManualRequestsTable();
+    return;
+  }
+
+  // Query manual requests for all courses owned by this faculty
+  const q = query(
+    collection(db, "manual_attendance_requests"),
+    where("courseCode", "in", courseCodes.slice(0, 30))
+  );
+
+  dashManualUnsubscribe = onSnapshot(q, (snapshot) => {
+    allFacultyManualRequests = snapshot.docs
+      .map((d) => ({ id: d.id, ...d.data(), isManualRequest: true }))
+      .filter((r) => courseCodes.includes(r.courseCode)); // Double safeguard: strictly courses owned by this faculty
+
+    renderDashboardManualRequestsTable();
+  }, (err) => {
+    console.error("Error listening to faculty manual requests:", err);
+  });
+}
+
+function renderDashboardManualRequestsTable() {
+  if (!dashboardManualTableBody) return;
+  dashboardManualTableBody.innerHTML = "";
+
+  const pendingList = allFacultyManualRequests.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
+  if (dashManualPendingCount) dashManualPendingCount.textContent = pendingList.length;
+  if (dashManualAllCount) dashManualAllCount.textContent = allFacultyManualRequests.length;
+
+  const displayList = dashManualTab === "pending" ? pendingList : allFacultyManualRequests;
+
+  if (displayList.length === 0) {
+    if (dashboardManualEmpty) {
+      dashboardManualEmpty.style.display = "block";
+      dashboardManualEmpty.textContent = dashManualTab === "pending"
+        ? "No pending manual requests across your courses."
+        : "No manual attendance requests recorded.";
+    }
+    return;
+  }
+
+  if (dashboardManualEmpty) dashboardManualEmpty.style.display = "none";
+
+  displayList.forEach((req) => {
+    const course = courses.find((c) => c.classCode === req.courseCode);
+    const courseLabel = course ? `${escapeHtml(req.courseCode)} — ${escapeHtml(course.name)}` : escapeHtml(req.courseCode);
+    const formattedTime = req.timestamp ? new Date(req.timestamp).toLocaleString() : "—";
+
+    let badgeClass = "badge-review";
+    if (req.status === "APPROVED") badgeClass = "badge-approved";
+    if (req.status === "REJECTED") badgeClass = "badge-rejected";
+
+    let actionsHtml = `<span style="color: var(--text-muted); font-size: 0.8rem;">Decided (${escapeHtml(req.status)})</span>`;
+    if (req.status === "REVIEW" || req.status === "PENDING") {
+      actionsHtml = `
+        <div style="display: flex; gap: 0.4rem;">
+          <button class="btn btn-success btn-sm btn-approve" data-id="${escapeHtml(req.id)}" data-manual="true">Approve</button>
+          <button class="btn btn-danger btn-sm btn-reject" data-id="${escapeHtml(req.id)}" data-manual="true">Reject</button>
+        </div>
+      `;
+    }
+
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td><strong>${courseLabel}</strong></td>
+      <td><strong>${escapeHtml(req.studentName || "Student")}</strong></td>
+      <td><code>${escapeHtml(req.studentEmail || "")}</code></td>
+      <td style="font-size: 0.85rem; max-width: 250px; word-break: break-word;">${escapeHtml(req.rejectionReason || "—")}</td>
+      <td style="font-size: 0.85rem; color: var(--text-muted);">${formattedTime}</td>
+      <td><span class="badge ${badgeClass}">${escapeHtml(req.status)}</span></td>
+      <td>${actionsHtml}</td>
+    `;
+
+    const btnApprove = row.querySelector(".btn-approve");
+    if (btnApprove) {
+      btnApprove.addEventListener("click", () => approveRecord(req.id, true));
+    }
+    const btnReject = row.querySelector(".btn-reject");
+    if (btnReject) {
+      btnReject.addEventListener("click", () => openRejectModal(req.id, true));
+    }
+
+    dashboardManualTableBody.appendChild(row);
+  });
+}
+
+if (tabDashManualPending) {
+  tabDashManualPending.addEventListener("click", () => {
+    dashManualTab = "pending";
+    tabDashManualPending.classList.add("active");
+    if (tabDashManualAll) tabDashManualAll.classList.remove("active");
+    renderDashboardManualRequestsTable();
+  });
+}
+
+if (tabDashManualAll) {
+  tabDashManualAll.addEventListener("click", () => {
+    dashManualTab = "all";
+    tabDashManualAll.classList.add("active");
+    if (tabDashManualPending) tabDashManualPending.classList.remove("active");
+    renderDashboardManualRequestsTable();
   });
 }
 
@@ -548,6 +765,11 @@ document.querySelectorAll("[data-close]").forEach((btn) => {
 
 // ─── 3. Session & Rotating QR Code ────────────────────────────────────────────
 async function openCourseSession(course) {
+  if (course.isArchived === true) {
+    alert(`Course "${course.name}" (${course.classCode}) is archived. Archived courses cannot start or manage attendance sessions.`);
+    return;
+  }
+
   currentCourse = course;
   sessionCourseTitle.textContent = `${course.classCode} — ${course.name}`;
   sessionCourseSubtitle.textContent = `Class Code: ${course.classCode} | Enrolled: ${(course.enrolledStudents || []).length} students`;
@@ -728,9 +950,9 @@ function launchActiveSessionUI() {
   // Trigger immediate QR token generation
   refreshQrToken();
 
-  // Start 25-second rotation cadence
+  // Start 30-second rotation cadence
   clearInterval(qrRotationTimer);
-  qrRotationTimer = setInterval(refreshQrToken, 25000);
+  qrRotationTimer = setInterval(refreshQrToken, 30000);
 
   // Start smooth progress and countdown timer
   startCountdownTimers();
@@ -772,7 +994,7 @@ function renderQrCode(rawOpaqueToken) {
 }
 
 function resetRotationCountdown() {
-  let secondsLeft = 25;
+  let secondsLeft = 30;
   qrRotationCountdown.textContent = `${secondsLeft}s`;
   rotationProgressBar.style.width = "100%";
 
@@ -781,7 +1003,7 @@ function resetRotationCountdown() {
     secondsLeft -= 1;
     if (secondsLeft < 0) secondsLeft = 0;
     qrRotationCountdown.textContent = `${secondsLeft}s`;
-    const pct = (secondsLeft / 25) * 100;
+    const pct = (secondsLeft / 30) * 100;
     rotationProgressBar.style.width = `${pct}%`;
 
     if (secondsLeft <= 0) {
@@ -1024,7 +1246,8 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
 async function approveRecord(recordId, isManual = false) {
   try {
     if (isManual) {
-      const manualDoc = manualRequests.find((m) => m.id === recordId);
+      const manualDoc = (allFacultyManualRequests || []).find((m) => m.id === recordId) ||
+                        (manualRequests || []).find((m) => m.id === recordId);
       if (!manualDoc) {
         throw new Error("Manual request document not found.");
       }

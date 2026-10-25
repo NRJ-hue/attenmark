@@ -121,7 +121,9 @@ service cloud.firestore {
                         get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.studentUid == request.auth.uid &&
                         get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.sessionId == request.resource.data.sessionId &&
                         (!('courseCode' in get(/databases/$(database)/documents/attendance_claims/$(recordId)).data) ||
-                         get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.courseCode == request.resource.data.courseCode)) ||
+                         get(/databases/$(database)/documents/attendance_claims/$(recordId)).data.courseCode == request.resource.data.courseCode) &&
+                        (!('overallScore' in request.resource.data) ||
+                         (request.resource.data.overallScore is int && request.resource.data.overallScore >= 0 && request.resource.data.overallScore <= 100))) ||
                        (isAuthorizedFacultyForRecordData(request.resource.data) &&
                         recordId == (request.resource.data.sessionId + "_" + request.resource.data.studentUid));
 
@@ -160,6 +162,8 @@ service cloud.firestore {
       // - Cannot directly claim APPROVED status (must be REVIEW or PENDING)
       // - Must be explicitly flagged as matchResult == 'MANUAL_REQUEST' and isQrVerified == false
       // - Document ID must strictly equal "${sessionId}_${studentUid}"
+      // - Session must exist in attendance_sessions and match courseCode (no synthetic or cross-course IDs)
+      // - Score must be within valid range [0, 100]
       allow create: if isAuthenticated() &&
                        request.auth.uid == request.resource.data.studentUid &&
                        requestId == (request.resource.data.sessionId + "_" + request.auth.uid) &&
@@ -169,7 +173,11 @@ service cloud.firestore {
                        request.resource.data.matchResult == 'MANUAL_REQUEST' &&
                        request.resource.data.isQrVerified == false &&
                        request.resource.data.sessionId != null &&
-                       request.resource.data.sessionId != '';
+                       request.resource.data.sessionId != '' &&
+                       exists(/databases/$(database)/documents/attendance_sessions/$(request.resource.data.sessionId)) &&
+                       get(/databases/$(database)/documents/attendance_sessions/$(request.resource.data.sessionId)).data.courseCode == request.resource.data.courseCode &&
+                       (!('overallScore' in request.resource.data) ||
+                        (request.resource.data.overallScore is int && request.resource.data.overallScore >= 0 && request.resource.data.overallScore <= 100));
 
       // Only authorized faculty who owns the course/session can approve or reject manual attendance requests.
       // Students cannot modify their manual request once submitted.

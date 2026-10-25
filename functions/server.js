@@ -92,6 +92,12 @@ const {
   bootstrapProfileCore
 } = require("./profile_service");
 
+const {
+  leaveCourseCore,
+  archiveCourseCore,
+  unarchiveCourseCore
+} = require("./course_service");
+
 const app = express();
 
 // Enable JSON body parsing with reasonable size limit
@@ -323,6 +329,48 @@ app.post(["/api/recordVerificationFailure", "/recordVerificationFailure"], authe
   try {
     const data = extractPayload(req);
     const result = await recordVerificationFailureCore(db, req.authContext, data);
+    return sendResponse(res, result);
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
+/**
+ * POST /api/leaveCourse
+ * Student leaves a course; securely removes strictly the calling student's email.
+ */
+app.post(["/api/leaveCourse", "/leaveCourse"], authenticateToken, async (req, res) => {
+  try {
+    const data = extractPayload(req);
+    const result = await leaveCourseCore(db, req.authContext, data);
+    return sendResponse(res, result);
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
+/**
+ * POST /api/archiveCourse
+ * Faculty archives an owned course; automatically stops any active session.
+ */
+app.post(["/api/archiveCourse", "/archiveCourse"], authenticateToken, async (req, res) => {
+  try {
+    const data = extractPayload(req);
+    const result = await archiveCourseCore(db, req.authContext, data);
+    return sendResponse(res, result);
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
+/**
+ * POST /api/unarchiveCourse
+ * Faculty unarchives an owned course.
+ */
+app.post(["/api/unarchiveCourse", "/unarchiveCourse"], authenticateToken, async (req, res) => {
+  try {
+    const data = extractPayload(req);
+    const result = await unarchiveCourseCore(db, req.authContext, data);
     return sendResponse(res, result);
   } catch (err) {
     return handleError(res, err);

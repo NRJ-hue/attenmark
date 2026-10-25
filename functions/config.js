@@ -15,8 +15,8 @@ module.exports = {
   // Server-enforced lifetime of each individual QR token
   TOKEN_VALIDITY_MS: 30000, // 30 seconds
 
-  // Web portal QR rotation cadence (generates next token before current expires)
-  QR_REFRESH_INTERVAL_MS: 25000, // 25 seconds
+  // Web portal QR rotation cadence (aligned with 30s validity window)
+  QR_REFRESH_INTERVAL_MS: 30000, // 30 seconds
 
   // Max verification attempts permitted per student per session (1 initial + 1 single retry)
   MAX_ATTEMPTS: 2,

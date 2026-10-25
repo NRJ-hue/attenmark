@@ -82,66 +82,195 @@ fun StudentDashboardScreen(
 
     if (showManualRequestDialog) {
         var reasonText by remember { mutableStateOf("") }
+        var manualRequestError by remember { mutableStateOf<String?>(null) }
+        var isSubmitting by remember { mutableStateOf(false) }
+
+        val hasActiveSession = activeSession != null &&
+            System.currentTimeMillis() < ((activeSession?.get("expiresAt") as? Number)?.toLong() ?: 0L)
+
         AlertDialog(
-            onDismissRequest = { showManualRequestDialog = false },
+            onDismissRequest = {
+                if (!isSubmitting) {
+                    showManualRequestDialog = false
+                    manualRequestError = null
+                }
+            },
             title = { Text("Manual Attendance Request") },
             text = {
                 Column {
-                    Text("If you cannot verify your identity automatically (e.g. camera broken, injury), you can submit a manual request to your professor.")
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = reasonText,
-                        onValueChange = { reasonText = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Reason for manual request...") }
+                    if (!hasActiveSession) {
+                        Text(
+                            "Cannot submit manual request: There is no active attendance session for this course ($courseCode). Manual requests can only be submitted while your professor has an active attendance session.",
+                            color = StatusRejected,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        Text(
+                            "If you cannot verify your identity automatically (e.g. camera issue, injury), submit a manual request to your professor with a clear explanation.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = reasonText,
+                            onValueChange = {
+                                reasonText = it
+                                manualRequestError = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Reason for manual attendance request...") },
+                            enabled = !isSubmitting,
+                            singleLine = false,
+                            maxLines = 3
+                        )
+                    }
+
+                    manualRequestError?.let { err ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(err, color = StatusRejected, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                if (hasActiveSession) {
+                    Button(
+                        onClick = {
+                            val trimmedReason = reasonText.trim()
+                            if (trimmedReason.isBlank()) {
+                                manualRequestError = "Please enter a reason for your request."
+                                return@Button
+                            }
+                            isSubmitting = true
+                            manualRequestError = null
+
+                            scope.launch {
+                                // Authoritatively fetch the active session to verify it is still active
+                                val freshSession = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    firestoreRepo.getActiveSession(courseCode)
+                                }
+                                val currentSessionId = freshSession?.get("sessionId") as? String
+
+                                if (currentSessionId.isNullOrBlank()) {
+                                    isSubmitting = false
+                                    manualRequestError = "The attendance session for $courseCode is no longer active. Request cannot be submitted."
+                                    return@launch
+                                }
+
+                                val currentUid = if (userUid.isNotBlank()) userUid
+                                    else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
+
+                                if (currentUid.isBlank()) {
+                                    isSubmitting = false
+                                    manualRequestError = "User authentication error. Please sign in again."
+                                    return@launch
+                                }
+
+                                val docId = "${currentSessionId}_${currentUid}"
+
+                                val record = AttendanceRecord(
+                                    id = docId,
+                                    sessionId = currentSessionId,
+                                    studentUid = currentUid,
+                                    studentName = userName,
+                                    studentEmail = userEmail,
+                                    courseCode = courseCode,
+                                    faceMatchScore = 0f,
+                                    matchPercentage = 0,
+                                    matchResult = "MANUAL_REQUEST",
+                                    livenessChallenge = "NONE",
+                                    livenessPassed = false,
+                                    status = AttendanceStatus.REVIEW,
+                                    overallScore = 0,
+                                    rejectionReason = "Manual Request: $trimmedReason"
+                                )
+
+                                firestoreRepo.submitManualRequest(
+                                    record = record,
+                                    onSuccess = {
+                                        isSubmitting = false
+                                        showManualRequestDialog = false
+                                    },
+                                    onFailure = { ex ->
+                                        isSubmitting = false
+                                        manualRequestError = ex.message ?: "Failed to submit manual request."
+                                    }
+                                )
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue),
+                        enabled = !isSubmitting
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text("Submit Request")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showManualRequestDialog = false },
+                    enabled = !isSubmitting
+                ) {
+                    Text(if (hasActiveSession) "Cancel" else "Close")
+                }
+            }
+        )
+    }
+
+    var showLeaveCourseDialog by remember { mutableStateOf(false) }
+    var isLeavingCourse by remember { mutableStateOf(false) }
+    var leaveCourseError by remember { mutableStateOf<String?>(null) }
+
+    if (showLeaveCourseDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isLeavingCourse) showLeaveCourseDialog = false },
+            title = { Text("Leave Course") },
+            text = {
+                Column {
+                    Text(
+                        "Are you sure you want to unenroll from $courseName ($courseCode)?\n\nYour attendance records and submission history will remain safely preserved for your professor's gradebook.",
+                        style = MaterialTheme.typography.bodyMedium
                     )
+                    leaveCourseError?.let { err ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(err, color = StatusRejected, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
+                        isLeavingCourse = true
+                        leaveCourseError = null
                         scope.launch {
-                            val activeSession = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                firestoreRepo.getActiveSession(courseCode)
-                            }
-                            val currentSessionId = (activeSession?.get("sessionId") as? String)
-                                ?: "manual_${courseCode}_${System.currentTimeMillis()}"
-                            val currentUid = if (userUid.isNotBlank()) userUid
-                                else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
-
-                            val docId = if (currentSessionId.isNotBlank() && currentUid.isNotBlank()) {
-                                "${currentSessionId}_${currentUid}"
+                            val result = firestoreRepo.leaveCourse(courseCode)
+                            isLeavingCourse = false
+                            if (result.isSuccess) {
+                                showLeaveCourseDialog = false
+                                onBack() // Refresh by returning to course selection
                             } else {
-                                java.util.UUID.randomUUID().toString()
+                                leaveCourseError = result.exceptionOrNull()?.message ?: "Failed to leave course."
                             }
-
-                            val record = AttendanceRecord(
-                                id = docId,
-                                sessionId = currentSessionId,
-                                studentUid = currentUid,
-                                studentName = userName,
-                                studentEmail = userEmail,
-                                courseCode = courseCode,
-                                faceMatchScore = 0f,
-                                matchPercentage = 0,
-                                matchResult = "MANUAL_REQUEST",
-                                livenessChallenge = "NONE",
-                                livenessPassed = false,
-                                status = AttendanceStatus.REVIEW,
-                                overallScore = 0,
-                                rejectionReason = "Manual Request: $reasonText"
-                            )
-                            firestoreRepo.submitManualRequest(record, onSuccess = {}, onFailure = {})
-                            showManualRequestDialog = false
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusRejected),
+                    enabled = !isLeavingCourse
                 ) {
-                    Text("Submit Request")
+                    if (isLeavingCourse) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text("Leave Course")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showManualRequestDialog = false }) { Text("Cancel") }
+                TextButton(
+                    onClick = { showLeaveCourseDialog = false },
+                    enabled = !isLeavingCourse
+                ) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -162,6 +291,12 @@ fun StudentDashboardScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = PrimaryBlue),
                 actions = {
+                    IconButton(
+                        onClick = { showLeaveCourseDialog = true },
+                        enabled = !isLeavingCourse
+                    ) {
+                        Icon(Icons.Default.ExitToApp, contentDescription = "Leave Course", tint = Color.White)
+                    }
                     IconButton(onClick = {
                         scope.launch {
                             prefs.logout()
@@ -483,6 +618,25 @@ fun AttendanceHistoryCard(record: AttendanceRecord) {
                     Text(if (backCameraValid) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (backCameraValid) StatusApproved else StatusRejected)
                 }
                 
+                if (record.status == AttendanceStatus.REVIEW) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        color = StatusReview.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Awaiting Instructor Approval", style = MaterialTheme.typography.labelMedium, color = StatusReview)
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "Your verification scan succeeded with a trust score of ${record.overallScore}/100. In accordance with university policy, all attendance submissions remain Under Review until confirmed and approved by your course instructor.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+                }
+
                 if (record.rejectionReason != null) {
                     Spacer(Modifier.height(12.dp))
                     Surface(

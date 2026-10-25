@@ -32,9 +32,9 @@ data class AttendanceRecord(
 }
 
 enum class AttendanceStatus(val label: String, val description: String) {
-    APPROVED("Approved", "Identity verified successfully"),
-    REVIEW("Under Review", "Low confidence — faculty review needed"),
-    REJECTED("Rejected", "Identity could not be verified"),
+    APPROVED("Approved", "Identity verified and confirmed by instructor"),
+    REVIEW("Under Review — Awaiting Faculty Approval", "Submission received — faculty review required"),
+    REJECTED("Rejected", "Identity or location could not be verified"),
 }
 
 /**

@@ -68,7 +68,14 @@ async function startAttendanceSessionCore(db, authContext, data) {
   }
 
   const courseDoc = coursesSnapshot.docs[0];
-  const courseFacultyEmail = (courseDoc.data().facultyEmail || "").toLowerCase();
+  const courseData = courseDoc.data();
+
+  // Reject starting session if course is archived
+  if (courseData.isArchived === true) {
+    throw new ServiceError("failed-precondition", "Cannot start an attendance session for an archived course.");
+  }
+
+  const courseFacultyEmail = (courseData.facultyEmail || "").toLowerCase();
   if (courseFacultyEmail !== facultyEmail) {
     throw new ServiceError("permission-denied", "You are not authorized to start a session for this course.");
   }
@@ -128,7 +135,9 @@ async function startAttendanceSessionCore(db, authContext, data) {
     isActive: true,
     durationMinutes,
     startedAt,
-    expiresAt
+    expiresAt,
+    currentTokenId: null,
+    lastTokenIssuedAt: null
   };
 
   const batch = db.batch();
@@ -307,7 +316,7 @@ async function generateQrTokenCore(db, authContext, data) {
   const issuedAt = Date.now();
   const expiresAt = issuedAt + config.TOKEN_VALIDITY_MS;
 
-  // 10. Store token in qr_tokens/{tokenId}
+  // 10. Store token in qr_tokens/{tokenId} and atomically update authoritative currentTokenId in session
   const tokenRecord = {
     tokenId,
     sessionId,
@@ -318,7 +327,17 @@ async function generateQrTokenCore(db, authContext, data) {
     expiresAt
   };
 
-  await db.collection("qr_tokens").doc(tokenId).set(tokenRecord);
+  const batch = db.batch();
+  batch.set(db.collection("qr_tokens").doc(tokenId), tokenRecord);
+  batch.update(db.collection("sessions").doc(courseCode), {
+    currentTokenId: tokenId,
+    lastTokenIssuedAt: issuedAt
+  });
+  batch.update(db.collection("attendance_sessions").doc(sessionId), {
+    currentTokenId: tokenId,
+    lastTokenIssuedAt: issuedAt
+  });
+  await batch.commit();
 
   return {
     tokenId,
@@ -415,6 +434,11 @@ async function validateQrTokenCore(db, authContext, data) {
 
     if (tokenData.sessionId !== sessionDoc.data().sessionId) {
       throw new ServiceError("invalid-argument", "QR token is from an old or inactive session.");
+    }
+
+    // Authoritative current-token verification: Once a replacement QR becomes active, previous QR is immediately rejected
+    if (sessionDoc.data().currentTokenId && sessionDoc.data().currentTokenId !== tokenId) {
+      throw new ServiceError("deadline-exceeded", "QR token has been rotated and is no longer valid. Please scan the current code on display.");
     }
 
     // C. Verify final attendance record has not already been submitted
