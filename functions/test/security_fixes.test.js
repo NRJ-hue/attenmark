@@ -583,3 +583,48 @@ describe("Security Fix E — Firebase Admin Credentials Startup Fail-Fast", func
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F. Production Backend URL and Local Emulator Isolation
+// ─────────────────────────────────────────────────────────────────────────────
+describe("Security Fix F — Production Backend URL and Emulator Isolation", function () {
+  const fs = require("fs");
+  const path = require("path");
+  const configPath = path.resolve(__dirname, "../../web-portal/js/firebase-config.js");
+  const gradlePath = path.resolve(__dirname, "../../app/build.gradle.kts");
+
+  it("web-portal firebase-config.js uses https://attenmark.onrender.com as production default", function () {
+    const content = fs.readFileSync(configPath, "utf8");
+    assert.ok(
+      content.includes('"https://attenmark.onrender.com"') || content.includes("'https://attenmark.onrender.com'"),
+      "web-portal must define https://attenmark.onrender.com as the production default backend URL"
+    );
+    assert.strictEqual(
+      content.includes("attendmark-backend.onrender.com"),
+      false,
+      "Placeholder attendmark-backend.onrender.com must be completely removed from firebase-config.js"
+    );
+  });
+
+  it("web-portal firebase-config.js isolates emulator fallback strictly to isLocal", function () {
+    const content = fs.readFileSync(configPath, "utf8");
+    // Ensure catch block only tries emulator fallback when isLocal is true
+    assert.ok(
+      content.includes("if (isLocal)") && content.includes("throw err;"),
+      "In production (!isLocal), errors must be re-thrown without emulator fallback"
+    );
+  });
+
+  it("app build.gradle.kts targets https://attenmark.onrender.com as production release backend", function () {
+    const content = fs.readFileSync(gradlePath, "utf8");
+    assert.ok(
+      content.includes("https://attenmark.onrender.com"),
+      "Android build.gradle.kts must define https://attenmark.onrender.com"
+    );
+    assert.strictEqual(
+      content.includes("attendmark-backend.onrender.com"),
+      false,
+      "Placeholder attendmark-backend.onrender.com must be removed from Android build configuration"
+    );
+  });
+});

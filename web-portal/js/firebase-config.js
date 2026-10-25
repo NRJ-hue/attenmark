@@ -73,9 +73,11 @@ async function callBackendApi(endpoint, data = {}) {
   }
 
   const idToken = await currentUser.getIdToken();
+  const defaultProdBackendUrl = "https://attenmark.onrender.com";
   const backendBaseUrl = window.ATTENDIQ_BACKEND_URL ||
-    localStorage.getItem("attendiq_backend_url") ||
-    (isLocal ? "http://127.0.0.1:3000" : "https://attendmark-backend.onrender.com");
+    (isLocal
+      ? (localStorage.getItem("attendiq_backend_url") || "http://127.0.0.1:3000")
+      : defaultProdBackendUrl);
 
   const normalizedBase = backendBaseUrl.replace(/\/+$/, "");
   const targetUrl = `${normalizedBase}/api/${endpoint}`;
