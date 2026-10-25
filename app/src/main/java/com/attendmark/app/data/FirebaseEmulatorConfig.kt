@@ -17,15 +17,15 @@ object FirebaseEmulatorConfig {
      */
     var isEmulatorEnabled: Boolean = BuildConfig.DEBUG &&
         BuildConfig.EMULATOR_HOST.isNotBlank() &&
-        BuildConfig.EMULATOR_HOST != "cloud" &&
-        BuildConfig.EMULATOR_HOST != "none"
+        !BuildConfig.EMULATOR_HOST.trim().equals("cloud", ignoreCase = true) &&
+        !BuildConfig.EMULATOR_HOST.trim().equals("none", ignoreCase = true)
 
     /**
      * Default host: "10.0.2.2" maps to localhost from the Android Studio emulator.
      * In debug builds, can be overridden at build time via -PemulatorHost=127.0.0.1 for USB-connected physical phones using adb reverse.
      */
     var emulatorHost: String = if (BuildConfig.DEBUG && BuildConfig.EMULATOR_HOST.isNotEmpty()) {
-        BuildConfig.EMULATOR_HOST
+        BuildConfig.EMULATOR_HOST.trim()
     } else {
         "10.0.2.2"
     }
@@ -37,6 +37,9 @@ object FirebaseEmulatorConfig {
 
     fun setup(enabled: Boolean = isEmulatorEnabled, host: String = emulatorHost) {
         if (!enabled || isConfigured) return
+        if (host.equals("cloud", ignoreCase = true) || host.equals("none", ignoreCase = true) || host.isBlank()) {
+            return
+        }
         try {
             FirebaseAuth.getInstance().useEmulator(host, AUTH_PORT)
             FirebaseFirestore.getInstance().useEmulator(host, FIRESTORE_PORT)

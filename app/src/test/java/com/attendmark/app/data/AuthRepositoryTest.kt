@@ -205,6 +205,127 @@ class AuthRepositoryTest {
         assertEquals("student", user.role)
         assertEquals("Offline Student", user.name)
     }
+
+    // ---- Student Registration Tests ----
+
+    @Test
+    fun register_withBlankEmailOrPassword_returnsError() = runBlocking {
+        val result1 = repository.register("", "pass123", "pass123")
+        assertTrue(result1 is AuthResult.Error)
+        assertEquals("Please enter email and password", (result1 as AuthResult.Error).message)
+
+        val result2 = repository.register("21cs01@test.com", "", "")
+        assertTrue(result2 is AuthResult.Error)
+        assertEquals("Please enter email and password", (result2 as AuthResult.Error).message)
+    }
+
+    @Test
+    fun register_withNonDigitEmailPrefix_returnsError() = runBlocking {
+        // Faculty email or student without roll prefix must be rejected
+        val result = repository.register("student@test.com", "pass123", "pass123")
+        assertTrue(result is AuthResult.Error)
+        assertEquals("Student email must start with your 2-digit roll/year prefix (e.g. 21...)", (result as AuthResult.Error).message)
+
+        val result2 = repository.register("faculty@univ.edu", "pass123", "pass123")
+        assertTrue(result2 is AuthResult.Error)
+        assertEquals("Student email must start with your 2-digit roll/year prefix (e.g. 21...)", (result2 as AuthResult.Error).message)
+    }
+
+    @Test
+    fun register_withShortPassword_returnsError() = runBlocking {
+        val result = repository.register("21cs01@test.com", "12345", "12345")
+        assertTrue(result is AuthResult.Error)
+        assertEquals("Password must be at least 6 characters", (result as AuthResult.Error).message)
+    }
+
+    @Test
+    fun register_withMismatchedPasswords_returnsError() = runBlocking {
+        val result = repository.register("21cs01@test.com", "secret123", "secret456")
+        assertTrue(result is AuthResult.Error)
+        assertEquals("Passwords do not match", (result as AuthResult.Error).message)
+    }
+
+    @Test
+    fun register_withValidStudentEmail_successCallsSignUpAndBootstrapProfile() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "student",
+                "name" to "John Doe",
+                "uid" to "uid-new-student",
+                "email" to "24cs099@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+
+        val result = customRepo.register("24cs099@univ.edu", "password123", "password123", "John Doe")
+        assertTrue(result is AuthResult.Success)
+        val user = (result as AuthResult.Success).user
+        assertEquals("student", user.role)
+        assertEquals("John Doe", user.name)
+        assertEquals("24cs099@univ.edu", user.email)
+        assertEquals("bootstrap-profile", fakeBackend.lastEndpoint)
+        assertEquals("John Doe", (fakeBackend.lastPayload?.get("name")))
+    }
+
+    @Test
+    fun register_whenBackendReturnsFacultyRole_rejectsAndSignsOut() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            responseMap = mapOf(
+                "role" to "faculty",
+                "name" to "Dr. Faculty",
+                "uid" to "uid-fac-mismatch",
+                "email" to "21fac@univ.edu"
+            )
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+
+        val result = customRepo.register("21fac@univ.edu", "password123", "password123")
+        assertTrue(result is AuthResult.Error)
+        assertTrue((result as AuthResult.Error).message.contains("Faculty account detected"))
+        assertTrue(fakeAuthProvider.signOutCalled)
+    }
+
+    @Test
+    fun register_whenBackendOffline_createsStudentProfileInStore() = runBlocking {
+        val fakeBackend = FakeBackendClient().apply {
+            shouldFail = true
+            failureCode = "UNAVAILABLE"
+            failureMessage = "Server offline"
+        }
+        val customRepo = AuthRepository(
+            authProvider = fakeAuthProvider,
+            profileStore = fakeProfileStore,
+            backendClient = fakeBackend
+        )
+
+        val result = customRepo.register("23bcs05@univ.edu", "password123", "password123", "Alice Smith")
+        assertTrue(result is AuthResult.Success)
+        val user = (result as AuthResult.Success).user
+        assertEquals("student", user.role)
+        assertEquals("Alice Smith", user.name)
+
+        val created = fakeProfileStore.lastCreatedProfile
+        assertTrue(created != null)
+        assertEquals("student", created?.second?.get("role"))
+        assertEquals("23bcs05@univ.edu", created?.second?.get("email"))
+    }
+
+    // ---- Emulator Config Tests ----
+
+    @Test
+    fun useEmulator_whenHostIsCloud_doesNotThrow() {
+        AuthRepository.useEmulator("cloud", 9099, 8080)
+        AuthRepository.useEmulator("none", 9099, 8080)
+        AuthRepository.useEmulator("", 9099, 8080)
+    }
 }
 
 /**
@@ -235,6 +356,21 @@ class FakeAuthProvider : AuthProvider {
         } else {
             Result.failure(Exception("Invalid email or password."))
         }
+    }
+
+    override suspend fun signUp(email: String, password: String): Result<Pair<String, String?>> {
+        failureMessage?.let {
+            return Result.failure(Exception(it))
+        }
+        val existing = users.keys.any { it.first == email }
+        if (existing) {
+            return Result.failure(Exception("An account already exists with this email address."))
+        }
+        val uid = "uid-${users.size + 1}"
+        val userPair = Pair(uid, null)
+        users[Pair(email, password)] = userPair
+        currentUser = userPair
+        return Result.success(userPair)
     }
 
     override fun signOut() {
