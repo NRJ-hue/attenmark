@@ -78,17 +78,34 @@ async function startAttendanceSessionCore(db, authContext, data) {
   const startedAt = Date.now();
   const expiresAt = startedAt + durationMinutes * 60 * 1000;
 
+  // Determine geofence radius: 100m in local demo / emulator mode, 50m in production
+  const isDemoMode = Boolean(
+    process.env.FUNCTIONS_EMULATOR === "true" ||
+    process.env.FIRESTORE_EMULATOR_HOST ||
+    process.env.NODE_ENV === "development" ||
+    process.env.NODE_ENV === "test" ||
+    config.isDemoMode
+  );
+  const defaultRadius = isDemoMode ? config.DEMO_GEOFENCE_RADIUS_METERS : config.PRODUCTION_GEOFENCE_RADIUS_METERS;
+  const callerRadius = (data && typeof data.geofenceRadiusMeters === "number" && data.geofenceRadiusMeters > 0)
+    ? data.geofenceRadiusMeters
+    : (data && data.location && typeof data.location.geofenceRadiusMeters === "number" && data.location.geofenceRadiusMeters > 0)
+      ? data.location.geofenceRadiusMeters
+      : null;
+  const geofenceRadiusMeters = callerRadius !== null ? callerRadius : defaultRadius;
+
   const sessionPayload = {
     sessionId,
     courseCode,
     facultyEmail,
     latitude,
     longitude,
+    geofenceRadiusMeters,
     locationConfigured: true,
     location: {
       latitude,
       longitude,
-      geofenceRadiusMeters: 50,
+      geofenceRadiusMeters,
       configuredAt: startedAt
     },
     isActive: true,
@@ -117,6 +134,13 @@ async function startAttendanceSessionCore(db, authContext, data) {
     durationMinutes,
     latitude,
     longitude,
+    geofenceRadiusMeters,
+    location: {
+      latitude,
+      longitude,
+      geofenceRadiusMeters,
+      configuredAt: startedAt
+    },
     locationConfigured: true
   };
 }

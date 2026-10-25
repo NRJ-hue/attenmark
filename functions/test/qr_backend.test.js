@@ -163,7 +163,7 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       );
     });
 
-    it("supports explicit location object { latitude, longitude } and verifies locationConfigured presence", async function () {
+    it("supports explicit location object { latitude, longitude } and verifies locationConfigured presence and demo 100m default", async function () {
       const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
       const res = await startAttendanceSessionCore(db, facultyAuth, {
         courseCode: COURSE_CODE,
@@ -175,10 +175,32 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       });
       assert.ok(res.sessionId);
       assert.strictEqual(res.locationConfigured, true);
+      assert.strictEqual(res.geofenceRadiusMeters, 100);
       const histDoc = await db.collection("attendance_sessions").doc(res.sessionId).get();
       assert.strictEqual(histDoc.data().locationConfigured, true);
-      assert.strictEqual(histDoc.data().location.geofenceRadiusMeters, 50);
+      assert.strictEqual(histDoc.data().location.geofenceRadiusMeters, 100);
+      assert.strictEqual(histDoc.data().geofenceRadiusMeters, 100);
       assert.strictEqual(histDoc.data().latitude, 37.7749);
+
+      const pointerDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.strictEqual(pointerDoc.data().location.geofenceRadiusMeters, 100);
+      assert.strictEqual(pointerDoc.data().geofenceRadiusMeters, 100);
+    });
+
+    it("supports explicit geofence radius override (50m for production mode configuration)", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const res = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        durationMinutes: 10,
+        latitude: 37.7749,
+        longitude: -122.4194,
+        geofenceRadiusMeters: 50
+      });
+      assert.ok(res.sessionId);
+      assert.strictEqual(res.geofenceRadiusMeters, 50);
+      const histDoc = await db.collection("attendance_sessions").doc(res.sessionId).get();
+      assert.strictEqual(histDoc.data().location.geofenceRadiusMeters, 50);
+      assert.strictEqual(histDoc.data().geofenceRadiusMeters, 50);
     });
 
     it("creates unique session ID and writes both historical and active pointer", async function () {

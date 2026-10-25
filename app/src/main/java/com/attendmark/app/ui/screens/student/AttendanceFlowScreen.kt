@@ -250,12 +250,17 @@ fun AttendanceFlowScreen(
                                     val facLon = (activeSession?.get("longitude") as? Number)?.toDouble()
                                     val isLocConfigured = activeSession?.get("locationConfigured") as? Boolean ?: (facLat != null && facLon != null)
 
+                                    val sessionRadius = ((activeSession?.get("geofenceRadiusMeters") as? Number)?.toFloat())
+                                        ?: ((activeSession?.get("location") as? Map<*, *>)?.get("geofenceRadiusMeters") as? Number)?.toFloat()
+                                        ?: LocationService.DEFAULT_GEOFENCE_RADIUS_METERS
+
                                     val gpsEval = LocationService.evaluateProximity(
                                         location = loc,
                                         locationError = locErr,
                                         classroomLat = facLat,
                                         classroomLon = facLon,
-                                        isConfigured = isLocConfigured
+                                        isConfigured = isLocConfigured,
+                                        geofenceRadiusMeters = sessionRadius
                                     )
 
                                     // Calculate 100-point Overall Trust Score:

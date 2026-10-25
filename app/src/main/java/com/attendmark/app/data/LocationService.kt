@@ -3,6 +3,7 @@ package com.attendmark.app.data
 import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
+import com.attendmark.app.BuildConfig
 import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.tasks.await
 
@@ -69,7 +70,23 @@ class LocationService(private val context: Context) {
     }
 
     companion object {
-        const val DEFAULT_GEOFENCE_RADIUS_METERS = 50f
+        const val PRODUCTION_GEOFENCE_RADIUS_METERS = 50f
+        const val DEMO_GEOFENCE_RADIUS_METERS = 100f
+
+        /**
+         * Environment-specific default geofence radius.
+         * Evaluates to 100m in local development / demo mode (when BuildConfig.DEBUG and emulator is enabled),
+         * and strictly 50m in production / release builds.
+         */
+        val DEFAULT_GEOFENCE_RADIUS_METERS: Float
+            get() = if (BuildConfig.DEBUG && FirebaseEmulatorConfig.isEmulatorEnabled) {
+                DEMO_GEOFENCE_RADIUS_METERS
+            } else {
+                PRODUCTION_GEOFENCE_RADIUS_METERS
+            }
+
+        fun getActiveDefaultGeofenceRadius(): Float = DEFAULT_GEOFENCE_RADIUS_METERS
+
         const val MAX_ACCEPTABLE_ACCURACY_METERS = 50f
 
         /**

@@ -17,7 +17,8 @@ import {
   where,
   onSnapshot,
   writeBatch,
-  httpsCallable
+  httpsCallable,
+  isLocal
 } from "./firebase-config.js";
 
 // ─── Application State ────────────────────────────────────────────────────────
@@ -317,11 +318,19 @@ async function openCourseSession(course) {
 
     if (sessionSnap.exists() && sessionSnap.data().isActive === true && (sessionSnap.data().expiresAt || 0) > Date.now()) {
       const data = sessionSnap.data();
+      const defaultRadius = isLocal ? 100 : 50;
+      const sessionRadius = data.geofenceRadiusMeters || (data.location && data.location.geofenceRadiusMeters) || defaultRadius;
       activeSession = {
         sessionId: data.sessionId,
         courseCode: course.classCode,
         latitude: data.latitude,
         longitude: data.longitude,
+        geofenceRadiusMeters: sessionRadius,
+        location: data.location || {
+          latitude: data.latitude,
+          longitude: data.longitude,
+          geofenceRadiusMeters: sessionRadius
+        },
         expiresAt: data.expiresAt,
         startedAt: data.startedAt,
         isActive: true
@@ -396,7 +405,8 @@ btnStartSession.addEventListener("click", async () => {
   const lonStr = (sessionLonInput.value || "").trim();
 
   if (!latStr || !lonStr) {
-    showAlert(startSessionAlert, "Cannot start attendance session: Classroom GPS coordinates are not configured. A valid physical location is required so student proximity can be verified against the 50m classroom geofence. Please click 'Detect & Use My Laptop Location' or enter your classroom's coordinates.", "danger");
+    const demoRadius = isLocal ? 100 : 50;
+    showAlert(startSessionAlert, `Cannot start attendance session: Classroom GPS coordinates are not configured. A valid physical location is required so student proximity can be verified against the ${demoRadius}m classroom geofence. Please click 'Detect & Use My Laptop Location' or enter your classroom's coordinates.`, "danger");
     return;
   }
 
@@ -421,11 +431,21 @@ btnStartSession.addEventListener("click", async () => {
       longitude
     });
 
+    const activeRadius = res.data.geofenceRadiusMeters
+      || (res.data.location && res.data.location.geofenceRadiusMeters)
+      || (isLocal ? 100 : 50);
+
     activeSession = {
       sessionId: res.data.sessionId,
       courseCode: currentCourse.classCode,
       latitude: res.data.latitude || latitude,
       longitude: res.data.longitude || longitude,
+      geofenceRadiusMeters: activeRadius,
+      location: res.data.location || {
+        latitude,
+        longitude,
+        geofenceRadiusMeters: activeRadius
+      },
       expiresAt: res.data.expiresAt,
       startedAt: res.data.startedAt,
       isActive: true
@@ -451,6 +471,16 @@ function launchActiveSessionUI() {
     const lat = activeSession.latitude !== undefined && activeSession.latitude !== null ? Number(activeSession.latitude).toFixed(5) : null;
     const lon = activeSession.longitude !== undefined && activeSession.longitude !== null ? Number(activeSession.longitude).toFixed(5) : null;
     coordsEl.textContent = (lat && lon) ? `Lat: ${lat}, Lon: ${lon}` : "Configured";
+  }
+
+  // Display environment-specific geofence radius
+  const radiusEl = document.getElementById("active-session-radius");
+  if (radiusEl) {
+    const defaultRadius = isLocal ? 100 : 50;
+    const radius = (activeSession && activeSession.location && activeSession.location.geofenceRadiusMeters)
+      || (activeSession && activeSession.geofenceRadiusMeters)
+      || defaultRadius;
+    radiusEl.textContent = `(${radius}m radius)`;
   }
 
   // Trigger immediate QR token generation

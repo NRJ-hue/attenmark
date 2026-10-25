@@ -432,4 +432,124 @@ class LocationServiceTest {
         assertEquals(GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR, invalidResult.status)
         assertTrue(invalidResult.isEligibleForRetry)
     }
+
+    // --- Environment-Specific Geofence Tests ------------------------------------
+
+    @Test
+    fun proximity_demoGpsReadingAtFiftyMetersIsUncertainAccuracy() {
+        // Physical device test scenario: Student phone beside laptop reports d = 36m, a = ±28m.
+        // Under production 50m geofence:
+        // d + a = 36 + 28 = 64m > 50m (uncertainty circle extends beyond geofence)
+        // d - a = 36 - 28 = 8m <= 50m (not confidently outside)
+        // -> UNCERTAIN_ACCURACY
+        val result = LocationService.evaluateProximity(
+            distanceMeters = 36f,
+            accuracyMeters = 28f,
+            geofenceRadiusMeters = 50f
+        )
+
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, result.status)
+        assertEquals(36f, result.distanceMeters, 0.01f)
+        assertEquals(28f, result.accuracyMeters, 0.01f)
+        assertTrue("Uncertain accuracy readings are eligible for retry", result.isEligibleForRetry)
+        assertNotNull(result.errorMessage)
+        assertTrue(result.errorMessage!!.contains("36m"))
+        assertTrue(result.errorMessage!!.contains("28m"))
+        assertTrue(result.errorMessage!!.contains("50m"))
+    }
+
+    @Test
+    fun proximity_demoGpsReadingAtOneHundredMetersPasses() {
+        // Same physical device reading (d = 36m, a = ±28m) under demo/local 100m geofence:
+        // d + a = 36 + 28 = 64m <= 100m (entire uncertainty circle is confidently inside geofence)
+        // -> PASSED
+        val result = LocationService.evaluateProximity(
+            distanceMeters = 36f,
+            accuracyMeters = 28f,
+            geofenceRadiusMeters = 100f
+        )
+
+        assertEquals(GpsVerificationStatus.PASSED, result.status)
+        assertEquals(36f, result.distanceMeters, 0.01f)
+        assertEquals(28f, result.accuracyMeters, 0.01f)
+        assertNull(result.errorMessage)
+    }
+
+    @Test
+    fun proximity_oneHundredMeterGeofence_boundaryConditions() {
+        // 1. Confidently inside at boundary: d = 70m, a = 30m, r = 100m -> d + a = 100m <= 100m -> PASSED
+        val insideBoundary = LocationService.evaluateProximity(
+            distanceMeters = 70f,
+            accuracyMeters = 30f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.PASSED, insideBoundary.status)
+
+        // 2. Inside distance, but uncertainty crosses boundary: d = 80m, a = 30m, r = 100m -> d + a = 110m > 100m, d - a = 50m <= 100m -> UNCERTAIN
+        val overlapInner = LocationService.evaluateProximity(
+            distanceMeters = 80f,
+            accuracyMeters = 30f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, overlapInner.status)
+        assertTrue(overlapInner.isEligibleForRetry)
+
+        // 3. Outside distance, but uncertainty circles geofence: d = 110m, a = 20m, r = 100m -> d - a = 90m <= 100m -> UNCERTAIN
+        val overlapOuter = LocationService.evaluateProximity(
+            distanceMeters = 110f,
+            accuracyMeters = 20f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, overlapOuter.status)
+        assertTrue(overlapOuter.isEligibleForRetry)
+
+        // 4. Exact outer boundary: d = 120m, a = 20m, r = 100m -> d - a = 100m <= 100m -> UNCERTAIN
+        val exactOuter = LocationService.evaluateProximity(
+            distanceMeters = 120f,
+            accuracyMeters = 20f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, exactOuter.status)
+        assertTrue(exactOuter.isEligibleForRetry)
+
+        // 5. Confidently outside boundary: d = 125m, a = 20m, r = 100m -> d - a = 105m > 100m -> OUTSIDE_GEOFENCE
+        val outsideBoundary = LocationService.evaluateProximity(
+            distanceMeters = 125f,
+            accuracyMeters = 20f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.OUTSIDE_GEOFENCE, outsideBoundary.status)
+        assertFalse("Outside geofence violations cannot be retried", outsideBoundary.isEligibleForRetry)
+
+        // 6. Confidently outside far away: d = 140m, a = 30m, r = 100m -> d - a = 110m > 100m -> OUTSIDE_GEOFENCE
+        val farOutside = LocationService.evaluateProximity(
+            distanceMeters = 140f,
+            accuracyMeters = 30f,
+            geofenceRadiusMeters = 100f
+        )
+        assertEquals(GpsVerificationStatus.OUTSIDE_GEOFENCE, farOutside.status)
+        assertFalse(farOutside.isEligibleForRetry)
+        assertTrue(farOutside.errorMessage!!.contains("100m"))
+    }
+
+    @Test
+    fun proximity_environmentSpecificDefaultRadiusResolution() {
+        assertEquals(50f, LocationService.PRODUCTION_GEOFENCE_RADIUS_METERS, 0.01f)
+        assertEquals(100f, LocationService.DEMO_GEOFENCE_RADIUS_METERS, 0.01f)
+
+        val initialEmulatorState = FirebaseEmulatorConfig.isEmulatorEnabled
+        try {
+            // When emulator mode is enabled (local development/demo), default radius is 100m
+            FirebaseEmulatorConfig.isEmulatorEnabled = true
+            assertEquals(100f, LocationService.DEFAULT_GEOFENCE_RADIUS_METERS, 0.01f)
+            assertEquals(100f, LocationService.getActiveDefaultGeofenceRadius(), 0.01f)
+
+            // When emulator mode is disabled (production configuration), default radius is 50m
+            FirebaseEmulatorConfig.isEmulatorEnabled = false
+            assertEquals(50f, LocationService.DEFAULT_GEOFENCE_RADIUS_METERS, 0.01f)
+            assertEquals(50f, LocationService.getActiveDefaultGeofenceRadius(), 0.01f)
+        } finally {
+            FirebaseEmulatorConfig.isEmulatorEnabled = initialEmulatorState
+        }
+    }
 }
