@@ -127,16 +127,14 @@ app.use(
   cors({
     origin: (origin, callback) => {
       // No origin = native app / curl / server-to-server — pass through.
-      // Authentication still enforced by authenticateToken middleware.
+      // Authentication and authorization are strictly enforced downstream
+      // by the authenticateToken middleware on every protected endpoint.
       if (!origin) return callback(null, true);
 
-      // Allow any Firebase Hosting subdomain for this project and any Render
-      // preview deploy (*.onrender.com) in addition to the explicit list.
-      const isAllowed =
-        ALLOWED_ORIGINS.includes(origin) ||
-        origin.endsWith(".web.app") ||
-        origin.endsWith(".firebaseapp.com") ||
-        (!IS_PRODUCTION && origin.endsWith(".onrender.com"));
+      // Enforce exact origin match against configured allowlist.
+      // Avoid broad wildcard suffix or regex rules that could allow unrelated
+      // web apps, Render services, or preview deployments.
+      const isAllowed = ALLOWED_ORIGINS.includes(origin);
 
       if (isAllowed) return callback(null, true);
 

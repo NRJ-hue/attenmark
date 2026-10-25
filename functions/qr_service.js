@@ -78,11 +78,9 @@ async function startAttendanceSessionCore(db, authContext, data) {
   const startedAt = Date.now();
   const expiresAt = startedAt + durationMinutes * 60 * 1000;
 
-  // Determine geofence radius: 100m in local demo / emulator mode, 50m in production.
-  // The effective radius is derived from trusted server configuration only.
-  // A client-supplied geofenceRadiusMeters is accepted solely as a downward
-  // adjustment (e.g. a smaller lab). It is clamped to the server-configured
-  // maximum so a faculty token cannot inflate the radius to bypass GPS verification.
+  // Determine geofence radius: exactly 100m in local demo / emulator mode, exactly 50m in production.
+  // The effective radius is determined strictly by trusted server configuration.
+  // Clients cannot request an enlarged (e.g. 999999m) or unexpectedly reduced (e.g. 1m) radius.
   const isDemoMode = Boolean(
     process.env.FUNCTIONS_EMULATOR === "true" ||
     process.env.FIRESTORE_EMULATOR_HOST ||
@@ -90,20 +88,28 @@ async function startAttendanceSessionCore(db, authContext, data) {
     process.env.NODE_ENV === "test" ||
     config.isDemoMode
   );
-  const serverDefaultRadius = isDemoMode ? config.DEMO_GEOFENCE_RADIUS_METERS : config.PRODUCTION_GEOFENCE_RADIUS_METERS;
 
-  // Parse a caller-supplied override (must be a positive number).
-  const rawCallerRadius =
-    (data && typeof data.geofenceRadiusMeters === "number" && data.geofenceRadiusMeters > 0)
+  let geofenceRadiusMeters;
+  if (!isDemoMode) {
+    // In production, radius is strictly 50m. Clients cannot alter this value.
+    geofenceRadiusMeters = config.PRODUCTION_GEOFENCE_RADIUS_METERS;
+  } else {
+    // In demo/test mode, default is strictly 100m.
+    // Explicit production configuration (50m) is accepted for testing production mode,
+    // but any client-supplied enlarged (e.g. 999999m) or arbitrary reduced (e.g. 1m) values
+    // are rejected and fall back strictly to the trusted demo default (100m).
+    const requested = (data && typeof data.geofenceRadiusMeters === "number")
       ? data.geofenceRadiusMeters
-      : (data && data.location && typeof data.location.geofenceRadiusMeters === "number" && data.location.geofenceRadiusMeters > 0)
+      : (data && data.location && typeof data.location.geofenceRadiusMeters === "number")
         ? data.location.geofenceRadiusMeters
         : null;
 
-  // Clamp: caller cannot exceed the server-configured maximum for this environment.
-  const geofenceRadiusMeters = rawCallerRadius !== null
-    ? Math.min(rawCallerRadius, serverDefaultRadius)
-    : serverDefaultRadius;
+    if (requested === config.PRODUCTION_GEOFENCE_RADIUS_METERS) {
+      geofenceRadiusMeters = config.PRODUCTION_GEOFENCE_RADIUS_METERS;
+    } else {
+      geofenceRadiusMeters = config.DEMO_GEOFENCE_RADIUS_METERS;
+    }
+  }
 
   const sessionPayload = {
     sessionId,

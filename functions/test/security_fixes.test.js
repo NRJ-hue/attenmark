@@ -99,15 +99,30 @@ describe("Security Fix A — CORS Enforcement", function () {
       "Requests without Origin must reach the handler — auth is still enforced separately");
   });
 
+  it("rejects an unrelated Firebase Hosting domain (*.web.app) with no wildcard allowance", async function () {
+    const { status } = await makeRequest(
+      "OPTIONS", "/api/bootstrap-profile",
+      "https://attacker-project.web.app",
+      { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "Authorization" }
+    );
+    assert.ok(status >= 400, "Unrelated *.web.app origin must be rejected");
+  });
+
+  it("rejects an unrelated Render service (*.onrender.com) with no wildcard allowance", async function () {
+    const { status } = await makeRequest(
+      "OPTIONS", "/api/bootstrap-profile",
+      "https://attacker-app.onrender.com",
+      { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "Authorization" }
+    );
+    assert.ok(status >= 400, "Unrelated *.onrender.com origin must be rejected");
+  });
+
   it("rejects a browser request from an unknown third-party origin in test mode", async function () {
-    // An origin that is not in the allowlist and does not match .web.app / .firebaseapp.com
     const { status } = await makeRequest(
       "OPTIONS", "/api/bootstrap-profile",
       "https://evil.example.com",
       { "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "Authorization" }
     );
-    // The cors package returns 500 when the callback is called with an Error.
-    // Browsers treat a non-2xx preflight as a CORS failure and block the request.
     assert.ok(status >= 400, `Expected a non-2xx status for rejected origin, got ${status}`);
   });
 
@@ -135,7 +150,7 @@ describe("Security Fix A — CORS Enforcement", function () {
 // ─────────────────────────────────────────────────────────────────────────────
 // B. Geofence Radius Clamp
 // ─────────────────────────────────────────────────────────────────────────────
-describe("Security Fix B — Geofence Radius Clamp", function () {
+describe("Security Fix B — Server-Controlled Geofence Radius Policy", function () {
   this.timeout(12000);
 
   const FACULTY_UID = "sec-fac-geo-" + Date.now();
@@ -158,28 +173,85 @@ describe("Security Fix B — Geofence Radius Clamp", function () {
     });
   });
 
-  it("uses the server-configured demo/emulator radius (100m) when no caller radius is supplied", async function () {
+  it("uses the server-configured demo radius (100m) when no caller radius is supplied in demo mode", async function () {
     const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
     const result = await startAttendanceSessionCore(db, auth, {
       courseCode: COURSE_CODE,
       ...validCoords
     });
-    assert.strictEqual(result.geofenceRadiusMeters, config.DEMO_GEOFENCE_RADIUS_METERS,
-      `Expected ${config.DEMO_GEOFENCE_RADIUS_METERS}m (demo default) when caller supplies nothing`);
+    assert.strictEqual(result.geofenceRadiusMeters, 100,
+      "Expected 100m (demo default) when caller supplies nothing");
   });
 
-  it("clamps an inflated caller-supplied radius down to the server-configured maximum", async function () {
+  it("local demo mode: client requesting 999999m cannot enlarge the 100m radius", async function () {
     const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
     const result = await startAttendanceSessionCore(db, auth, {
       courseCode: COURSE_CODE,
       ...validCoords,
-      geofenceRadiusMeters: 999999  // attacker tries to disable GPS verification
+      geofenceRadiusMeters: 999999
     });
-    assert.strictEqual(result.geofenceRadiusMeters, config.DEMO_GEOFENCE_RADIUS_METERS,
-      "Inflated radius must be clamped to the server-configured max, not the caller-supplied value");
+    assert.strictEqual(result.geofenceRadiusMeters, 100,
+      "Client requesting 999999m must receive server-configured 100m in demo mode");
   });
 
-  it("REGRESSION: in production mode, radius is 50m and cannot be enlarged by client", async function () {
+  it("local demo mode: client requesting 1m cannot reduce the 100m radius", async function () {
+    const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+    const result = await startAttendanceSessionCore(db, auth, {
+      courseCode: COURSE_CODE,
+      ...validCoords,
+      geofenceRadiusMeters: 1
+    });
+    assert.strictEqual(result.geofenceRadiusMeters, 100,
+      "Client requesting 1m must receive server-configured 100m in demo mode");
+  });
+
+  it("local demo mode: invalid, zero, negative, and missing values result in 100m", async function () {
+    const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+    for (const val of [0, -50, "invalid", null, undefined]) {
+      const result = await startAttendanceSessionCore(db, auth, {
+        courseCode: COURSE_CODE,
+        ...validCoords,
+        geofenceRadiusMeters: val
+      });
+      assert.strictEqual(result.geofenceRadiusMeters, 100,
+        `Expected 100m when client provides geofenceRadiusMeters=${val}`);
+    }
+  });
+
+  it("production mode: default radius is strictly 50m", async function () {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+    const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
+    const origConfigDemo = config.isDemoMode;
+
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.FIRESTORE_EMULATOR_HOST;
+      delete process.env.FUNCTIONS_EMULATOR;
+      config.isDemoMode = false;
+
+      const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const result = await startAttendanceSessionCore(db, auth, {
+        courseCode: COURSE_CODE,
+        ...validCoords
+      });
+
+      assert.strictEqual(result.geofenceRadiusMeters, 50,
+        "Production environment default radius must strictly be 50m");
+      assert.strictEqual(result.location.geofenceRadiusMeters, 50);
+
+      const sessionDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.strictEqual(sessionDoc.data().geofenceRadiusMeters, 50);
+      assert.strictEqual(sessionDoc.data().location.geofenceRadiusMeters, 50);
+    } finally {
+      process.env.NODE_ENV = origNodeEnv;
+      if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
+      if (origFuncEmulator) process.env.FUNCTIONS_EMULATOR = origFuncEmulator;
+      config.isDemoMode = origConfigDemo;
+    }
+  });
+
+  it("production mode: client requesting 999999m cannot enlarge the 50m radius", async function () {
     const origNodeEnv = process.env.NODE_ENV;
     const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
     const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
@@ -195,17 +267,11 @@ describe("Security Fix B — Geofence Radius Clamp", function () {
       const result = await startAttendanceSessionCore(db, auth, {
         courseCode: COURSE_CODE,
         ...validCoords,
-        geofenceRadiusMeters: 500 // attacker tries to expand to 500m in production
+        geofenceRadiusMeters: 999999
       });
 
       assert.strictEqual(result.geofenceRadiusMeters, 50,
-        "Production environment must strictly clamp radius to 50m");
-      assert.strictEqual(result.location.geofenceRadiusMeters, 50);
-
-      // Verify Firestore session record also has 50m
-      const sessionDoc = await db.collection("sessions").doc(COURSE_CODE).get();
-      assert.strictEqual(sessionDoc.data().geofenceRadiusMeters, 50);
-      assert.strictEqual(sessionDoc.data().location.geofenceRadiusMeters, 50);
+        "Production environment must strictly enforce 50m, ignoring client request of 999999m");
     } finally {
       process.env.NODE_ENV = origNodeEnv;
       if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
@@ -214,16 +280,63 @@ describe("Security Fix B — Geofence Radius Clamp", function () {
     }
   });
 
-  it("accepts a caller-supplied radius that is smaller than the server default", async function () {
-    const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
-    const smallRadius = 30;  // smaller than 100m demo default
-    const result = await startAttendanceSessionCore(db, auth, {
-      courseCode: COURSE_CODE,
-      ...validCoords,
-      geofenceRadiusMeters: smallRadius
-    });
-    assert.strictEqual(result.geofenceRadiusMeters, smallRadius,
-      "A radius smaller than the default should be accepted as-is");
+  it("production mode: client requesting 1m cannot reduce the 50m radius", async function () {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+    const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
+    const origConfigDemo = config.isDemoMode;
+
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.FIRESTORE_EMULATOR_HOST;
+      delete process.env.FUNCTIONS_EMULATOR;
+      config.isDemoMode = false;
+
+      const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const result = await startAttendanceSessionCore(db, auth, {
+        courseCode: COURSE_CODE,
+        ...validCoords,
+        geofenceRadiusMeters: 1
+      });
+
+      assert.strictEqual(result.geofenceRadiusMeters, 50,
+        "Production environment must strictly enforce 50m, ignoring client request of 1m");
+    } finally {
+      process.env.NODE_ENV = origNodeEnv;
+      if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
+      if (origFuncEmulator) process.env.FUNCTIONS_EMULATOR = origFuncEmulator;
+      config.isDemoMode = origConfigDemo;
+    }
+  });
+
+  it("production mode: invalid, zero, negative, and missing values result in 50m", async function () {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+    const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
+    const origConfigDemo = config.isDemoMode;
+
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.FIRESTORE_EMULATOR_HOST;
+      delete process.env.FUNCTIONS_EMULATOR;
+      config.isDemoMode = false;
+
+      const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      for (const val of [0, -100, "foo", null, undefined]) {
+        const result = await startAttendanceSessionCore(db, auth, {
+          courseCode: COURSE_CODE,
+          ...validCoords,
+          geofenceRadiusMeters: val
+        });
+        assert.strictEqual(result.geofenceRadiusMeters, 50,
+          `Expected 50m in production when client provides geofenceRadiusMeters=${val}`);
+      }
+    } finally {
+      process.env.NODE_ENV = origNodeEnv;
+      if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
+      if (origFuncEmulator) process.env.FUNCTIONS_EMULATOR = origFuncEmulator;
+      config.isDemoMode = origConfigDemo;
+    }
   });
 
   it("config.DEMO_GEOFENCE_RADIUS_METERS is 100 in test/dev mode", function () {
