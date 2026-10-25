@@ -73,10 +73,34 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
   // ─── 1. Faculty Login & Role Enforcement ───────────────────────────────────
 
   describe("Faculty Login & Role Enforcement", function () {
-    it("verifies faculty role allows portal access", async function () {
+    const UNVERIFIED_FACULTY_UID = "portal-unverified-fac";
+    const WRONG_ROLE_UID = "portal-wrong-role-user";
+
+    it("verifies correctly provisioned faculty allows portal access", async function () {
       const userDoc = await db.collection("users").doc(FACULTY_UID).get();
       assert.strictEqual(userDoc.exists, true);
       assert.strictEqual(userDoc.data().role, "faculty");
+      const canAccess = userDoc.exists && userDoc.data().role === "faculty";
+      assert.strictEqual(canAccess, true);
+    });
+
+    it("verifies faculty account without verification (missing Firestore profile) remains denied", async function () {
+      const unverifiedDoc = await db.collection("users").doc(UNVERIFIED_FACULTY_UID).get();
+      assert.strictEqual(unverifiedDoc.exists, false);
+      const canAccess = unverifiedDoc.exists && unverifiedDoc.data().role === "faculty";
+      assert.strictEqual(canAccess, false);
+    });
+
+    it("verifies faculty account with unverified/non-faculty role remains denied", async function () {
+      await db.collection("users").doc(WRONG_ROLE_UID).set({
+        role: "guest",
+        email: "guest@test.com",
+        name: "Guest User"
+      });
+      const wrongRoleDoc = await db.collection("users").doc(WRONG_ROLE_UID).get();
+      assert.strictEqual(wrongRoleDoc.exists, true);
+      const canAccess = wrongRoleDoc.exists && wrongRoleDoc.data().role === "faculty";
+      assert.strictEqual(canAccess, false);
     });
 
     it("verifies student role is denied faculty portal access", async function () {
@@ -84,6 +108,8 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       assert.strictEqual(studentDoc.exists, true);
       assert.notStrictEqual(studentDoc.data().role, "faculty");
       assert.strictEqual(studentDoc.data().role, "student");
+      const canAccess = studentDoc.exists && studentDoc.data().role === "faculty";
+      assert.strictEqual(canAccess, false);
     });
   });
 

@@ -12,7 +12,7 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
   this.timeout(15000);
 
   let testEnv;
-  const PROJECT_ID = "attendmark-c2f07";
+  const PROJECT_ID = "attendmark-rules-test";
 
   before(async function () {
     const rules = fs.readFileSync(path.resolve(__dirname, "../../firestore.rules"), "utf8");
