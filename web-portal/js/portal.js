@@ -275,7 +275,7 @@ formCreateCourse.addEventListener("submit", async (e) => {
   }
 
   if (!code) {
-    code = (1..6).constructor.name ? Math.random().toString(36).substring(2, 8).toUpperCase() : "CS" + Math.floor(100 + Math.random() * 900);
+    code = Math.random().toString(36).substring(2, 8).toUpperCase();
   }
 
   try {

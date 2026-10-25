@@ -9,6 +9,14 @@ const {
   validateQrTokenCore,
   recordVerificationFailureCore
 } = require("../qr_service");
+const {
+  extractCallableParams,
+  startAttendanceSession,
+  stopAttendanceSession,
+  generateQrToken,
+  validateQrToken,
+  recordVerificationFailure
+} = require("../index");
 
 // Configure admin to point to the local Firestore emulator
 process.env.FIRESTORE_EMULATOR_HOST = "127.0.0.1:8080";
@@ -680,6 +688,264 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
         }),
         (err) => err.code === "already-exists"
       );
+    });
+  });
+
+  describe("Exported Callable Cloud Functions Interface (2nd Gen & 1st Gen Compatibility)", function () {
+    describe("extractCallableParams unit tests", function () {
+      it("normalizes 2nd gen CallableRequest with auth token email", function () {
+        const req = {
+          data: { courseCode: COURSE_CODE, durationMinutes: 10 },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        };
+        const extracted = extractCallableParams(req);
+        assert.deepStrictEqual(extracted.data, { courseCode: COURSE_CODE, durationMinutes: 10 });
+        assert.deepStrictEqual(extracted.authContext, { uid: FACULTY_UID, email: FACULTY_EMAIL });
+      });
+
+      it("normalizes 2nd gen unauthenticated request (auth: null)", function () {
+        const req = {
+          data: { courseCode: COURSE_CODE },
+          auth: null
+        };
+        const extracted = extractCallableParams(req);
+        assert.deepStrictEqual(extracted.data, { courseCode: COURSE_CODE });
+        assert.strictEqual(extracted.authContext, null);
+      });
+
+      it("normalizes 1st gen (data, context) invocation", function () {
+        const data = { courseCode: COURSE_CODE };
+        const context = { auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } } };
+        const extracted = extractCallableParams(data, context);
+        assert.deepStrictEqual(extracted.data, { courseCode: COURSE_CODE });
+        assert.deepStrictEqual(extracted.authContext, { uid: FACULTY_UID, email: FACULTY_EMAIL });
+      });
+
+      it("normalizes 1st gen unauthenticated invocation", function () {
+        const data = { courseCode: COURSE_CODE };
+        const extracted = extractCallableParams(data, {});
+        assert.deepStrictEqual(extracted.data, { courseCode: COURSE_CODE });
+        assert.strictEqual(extracted.authContext, null);
+      });
+
+      it("handles null/empty payload safely in 2nd gen format", function () {
+        const req = {
+          data: null,
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        };
+        const extracted = extractCallableParams(req);
+        assert.deepStrictEqual(extracted.data, {});
+        assert.deepStrictEqual(extracted.authContext, { uid: FACULTY_UID, email: FACULTY_EMAIL });
+      });
+    });
+
+    describe("Callable entrypoints via .run() with 2nd gen CallableRequest", function () {
+      it("startAttendanceSession.run() succeeds with authenticated faculty", async function () {
+        const res = await startAttendanceSession.run({
+          data: {
+            courseCode: COURSE_CODE,
+            durationMinutes: 15,
+            latitude: 12.9716,
+            longitude: 77.5946
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+        assert.ok(res.sessionId);
+        assert.strictEqual(res.courseCode, COURSE_CODE);
+        assert.strictEqual(res.latitude, 12.9716);
+        assert.strictEqual(res.longitude, 77.5946);
+        assert.strictEqual(res.locationConfigured, true);
+      });
+
+      it("startAttendanceSession.run() REJECTS unauthenticated caller with unauthenticated HttpsError", async function () {
+        await assert.rejects(
+          startAttendanceSession.run({
+            data: {
+              courseCode: COURSE_CODE,
+              durationMinutes: 10,
+              latitude: 12.9716,
+              longitude: 77.5946
+            },
+            auth: null
+          }),
+          (err) => err.code === "unauthenticated"
+        );
+      });
+
+      it("startAttendanceSession.run() REJECTS student caller with permission-denied", async function () {
+        await assert.rejects(
+          startAttendanceSession.run({
+            data: {
+              courseCode: COURSE_CODE,
+              durationMinutes: 10,
+              latitude: 12.9716,
+              longitude: 77.5946
+            },
+            auth: { uid: STUDENT_1_UID, token: { email: STUDENT_1_EMAIL } }
+          }),
+          (err) => err.code === "permission-denied"
+        );
+      });
+
+      it("startAttendanceSession.run() REJECTS unauthorized faculty with permission-denied", async function () {
+        await assert.rejects(
+          startAttendanceSession.run({
+            data: {
+              courseCode: COURSE_CODE,
+              durationMinutes: 10,
+              latitude: 12.9716,
+              longitude: 77.5946
+            },
+            auth: { uid: OTHER_FACULTY_UID, token: { email: OTHER_FACULTY_EMAIL } }
+          }),
+          (err) => err.code === "permission-denied"
+        );
+      });
+
+      it("startAttendanceSession.run() REJECTS missing coordinates with invalid-argument", async function () {
+        await assert.rejects(
+          startAttendanceSession.run({
+            data: {
+              courseCode: COURSE_CODE,
+              durationMinutes: 10
+            },
+            auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+          }),
+          (err) => err.code === "invalid-argument"
+        );
+      });
+
+      it("generateQrToken.run() generates token for active session with authenticated faculty", async function () {
+        const res = await generateQrToken.run({
+          data: {
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+        assert.ok(res.tokenId);
+        assert.ok(res.expiresAt);
+        assert.ok(res.validityMs);
+      });
+
+      it("generateQrToken.run() REJECTS unauthenticated caller with unauthenticated", async function () {
+        await assert.rejects(
+          generateQrToken.run({
+            data: {
+              courseCode: COURSE_CODE,
+              sessionId: activeSessionId
+            },
+            auth: null
+          }),
+          (err) => err.code === "unauthenticated"
+        );
+      });
+
+      it("validateQrToken.run() validates token and creates claim for enrolled student", async function () {
+        const tokenRes = await generateQrToken.run({
+          data: {
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+
+        const res = await validateQrToken.run({
+          data: {
+            tokenId: tokenRes.tokenId,
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: STUDENT_1_UID, token: { email: STUDENT_1_EMAIL } }
+        });
+        assert.strictEqual(res.valid, true);
+        assert.strictEqual(res.courseCode, COURSE_CODE);
+        assert.strictEqual(res.sessionId, activeSessionId);
+        assert.strictEqual(res.claimStatus, "CLAIMED");
+      });
+
+      it("validateQrToken.run() REJECTS unauthenticated caller with unauthenticated", async function () {
+        await assert.rejects(
+          validateQrToken.run({
+            data: {
+              tokenId: "any-token",
+              courseCode: COURSE_CODE,
+              sessionId: activeSessionId
+            },
+            auth: null
+          }),
+          (err) => err.code === "unauthenticated"
+        );
+      });
+
+      it("recordVerificationFailure.run() records verification failure for student claim", async function () {
+        const tokenRes = await generateQrToken.run({
+          data: {
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+
+        await validateQrToken.run({
+          data: {
+            tokenId: tokenRes.tokenId,
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: STUDENT_1_UID, token: { email: STUDENT_1_EMAIL } }
+        });
+
+        const res = await recordVerificationFailure.run({
+          data: {
+            sessionId: activeSessionId,
+            courseCode: COURSE_CODE,
+            failureReason: "LIVENESS_FAILED"
+          },
+          auth: { uid: STUDENT_1_UID, token: { email: STUDENT_1_EMAIL } }
+        });
+        assert.strictEqual(res.status, "VERIFICATION_FAILED");
+        assert.strictEqual(res.retryEligible, true);
+      });
+
+      it("recordVerificationFailure.run() REJECTS unauthenticated caller with unauthenticated", async function () {
+        await assert.rejects(
+          recordVerificationFailure.run({
+            data: {
+              sessionId: activeSessionId,
+              courseCode: COURSE_CODE,
+              failureReason: "LIVENESS_FAILED"
+            },
+            auth: null
+          }),
+          (err) => err.code === "unauthenticated"
+        );
+      });
+
+      it("stopAttendanceSession.run() deactivates session with authenticated faculty", async function () {
+        const res = await stopAttendanceSession.run({
+          data: {
+            courseCode: COURSE_CODE,
+            sessionId: activeSessionId
+          },
+          auth: { uid: FACULTY_UID, token: { email: FACULTY_EMAIL } }
+        });
+        assert.strictEqual(res.success, true);
+        assert.strictEqual(res.sessionId, activeSessionId);
+      });
+
+      it("stopAttendanceSession.run() REJECTS unauthenticated caller with unauthenticated", async function () {
+        await assert.rejects(
+          stopAttendanceSession.run({
+            data: {
+              courseCode: COURSE_CODE,
+              sessionId: activeSessionId
+            },
+            auth: null
+          }),
+          (err) => err.code === "unauthenticated"
+        );
+      });
     });
   });
 });
