@@ -25,3 +25,4 @@ java_pid*.hprof
 node_modules/
 functions/node_modules/
 *-debug.log
+.firebase/
