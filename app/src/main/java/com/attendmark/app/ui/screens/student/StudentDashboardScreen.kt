@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.attendmark.app.data.ActiveSessionState
 import com.attendmark.app.data.AttendanceRecord
 import com.attendmark.app.data.AttendanceStatus
 import com.attendmark.app.data.AttendanceStore
@@ -53,16 +54,9 @@ fun StudentDashboardScreen(
     val firestoreRepo = remember { com.attendmark.app.data.FirestoreRepository() }
     val locationService = remember { com.attendmark.app.data.LocationService(context) }
     
-    var activeSession by remember { mutableStateOf<Map<String, Any>?>(null) }
-    var isPrefetchingSession by remember { mutableStateOf(true) }
-
-    LaunchedEffect(courseCode) {
-        isPrefetchingSession = true
-        activeSession = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            firestoreRepo.getActiveSession(courseCode)
-        }
-        isPrefetchingSession = false
-    }
+    val sessionState by firestoreRepo.getActiveSessionStateFlow(courseCode)
+        .collectAsState(initial = ActiveSessionState.Loading)
+    val activeSession = (sessionState as? ActiveSessionState.Active)?.sessionData
 
     LaunchedEffect(userEmail, userUid, courseCode) {
         if (userEmail.isNotBlank()) {
@@ -435,34 +429,67 @@ fun StudentDashboardScreen(
 
             // Active Session Status Banner
             item {
-                if (activeSession != null) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = StatusApproved.copy(alpha = 0.12f)),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, StatusApproved.copy(alpha = 0.5f))
-                    ) {
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = StatusApproved)
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text("Session In Progress", color = StatusApproved, style = MaterialTheme.typography.titleSmall)
-                                Text("Tap 'Mark Attendance' to scan the rotating classroom QR code.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                when (val state = sessionState) {
+                    is ActiveSessionState.Active -> {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = StatusApproved.copy(alpha = 0.12f)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StatusApproved.copy(alpha = 0.5f))
+                        ) {
+                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = StatusApproved)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("Session In Progress", color = StatusApproved, style = MaterialTheme.typography.titleSmall)
+                                    Text("Tap 'Mark Attendance' to scan the rotating classroom QR code.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
-                } else if (!isPrefetchingSession) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Info, contentDescription = null, tint = TextSecondary)
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text("No Active Session", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
-                                Text("Wait for your instructor to launch the session on the projector.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    is ActiveSessionState.Loading -> {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = PrimaryBlue)
+                                Spacer(Modifier.width(12.dp))
+                                Text("Checking for live session...", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                    is ActiveSessionState.Error -> {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = StatusRejected.copy(alpha = 0.1f)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StatusRejected.copy(alpha = 0.4f))
+                        ) {
+                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Warning, contentDescription = null, tint = StatusRejected)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("Connection Issue", color = StatusRejected, style = MaterialTheme.typography.titleSmall)
+                                    Text(state.message, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                    is ActiveSessionState.None -> {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Info, contentDescription = null, tint = TextSecondary)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text("No Active Session", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                                    Text("Wait for your instructor to launch the session on the projector.", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }

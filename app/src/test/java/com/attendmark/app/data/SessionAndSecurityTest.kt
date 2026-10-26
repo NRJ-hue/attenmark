@@ -424,4 +424,126 @@ class SessionAndSecurityTest {
         val (nullSessOk, _) = validateManualRequest(null, "stu-1", "CS101", "Valid reason")
         assertFalse(nullSessOk)
     }
+
+    // ─── 10. Session Expiration, Safe Numeric Types, and Reactive State ─────────
+
+    private fun parseExpiresAt(rawExpiresAt: Any?): Long {
+        return (rawExpiresAt as? Number)?.toLong() ?: 0L
+    }
+
+    private fun evaluateSessionActive(
+        docExists: Boolean,
+        isActive: Boolean?,
+        expiresAtRaw: Any?,
+        currentTimeMillis: Long
+    ): Pair<Boolean, Map<String, Any>?> {
+        if (!docExists || isActive != true) return Pair(false, null)
+        val expiresAt = parseExpiresAt(expiresAtRaw)
+        return if (currentTimeMillis < expiresAt) {
+            Pair(true, mapOf("isActive" to true, "expiresAt" to expiresAt))
+        } else {
+            Pair(false, null)
+        }
+    }
+
+    @Test
+    fun sessionNumericParsing_handlesLongAndDoubleAndIntWithoutClassCastException() {
+        // Firestore can serialize numbers as Long, Double, or Int
+        val longVal: Any = 1730000000000L
+        val doubleVal: Any = 1730000000000.0
+        val intVal: Any = 1000
+
+        assertEquals(1730000000000L, parseExpiresAt(longVal))
+        assertEquals(1730000000000L, parseExpiresAt(doubleVal))
+        assertEquals(1000L, parseExpiresAt(intVal))
+        assertEquals(0L, parseExpiresAt(null))
+        assertEquals(0L, parseExpiresAt("not-a-number"))
+    }
+
+    @Test
+    fun sessionActiveEvaluation_correctlyDistinguishesActiveExpiredAndInactive() {
+        val now = 1000000L
+        val future = now + 600000L // +10 min
+        val past = now - 1000L // -1s
+
+        // 1. Truly active session
+        val (activeOk, activeData) = evaluateSessionActive(
+            docExists = true,
+            isActive = true,
+            expiresAtRaw = future,
+            currentTimeMillis = now
+        )
+        assertTrue(activeOk)
+        assertTrue(activeData != null)
+        assertEquals(future, activeData?.get("expiresAt"))
+
+        // 2. Active session with Double expiresAt
+        val (activeDoubleOk, _) = evaluateSessionActive(
+            docExists = true,
+            isActive = true,
+            expiresAtRaw = future.toDouble(),
+            currentTimeMillis = now
+        )
+        assertTrue(activeDoubleOk)
+
+        // 3. Expired session
+        val (expiredOk, expiredData) = evaluateSessionActive(
+            docExists = true,
+            isActive = true,
+            expiresAtRaw = past,
+            currentTimeMillis = now
+        )
+        assertFalse(expiredOk)
+        assertEquals(null, expiredData)
+
+        // 4. Session where isActive is false (faculty stopped session)
+        val (stoppedOk, stoppedData) = evaluateSessionActive(
+            docExists = true,
+            isActive = false,
+            expiresAtRaw = future,
+            currentTimeMillis = now
+        )
+        assertFalse(stoppedOk)
+        assertEquals(null, stoppedData)
+
+        // 5. Document does not exist
+        val (missingOk, missingData) = evaluateSessionActive(
+            docExists = false,
+            isActive = null,
+            expiresAtRaw = null,
+            currentTimeMillis = now
+        )
+        assertFalse(missingOk)
+        assertEquals(null, missingData)
+    }
+
+    @Test
+    fun activeSessionState_modelsAllUIStatesCorrectly() {
+        val loading: ActiveSessionState = ActiveSessionState.Loading
+        val none: ActiveSessionState = ActiveSessionState.None
+        val active: ActiveSessionState = ActiveSessionState.Active(mapOf("sessionId" to "sess-123", "courseCode" to "CS101"))
+        val error: ActiveSessionState = ActiveSessionState.Error("PERMISSION_DENIED: caller lacks access", Exception("Auth denied"))
+
+        assertTrue(loading is ActiveSessionState.Loading)
+        assertTrue(none is ActiveSessionState.None)
+        assertTrue(active is ActiveSessionState.Active)
+        assertEquals("sess-123", (active as ActiveSessionState.Active).sessionData["sessionId"])
+        assertTrue(error is ActiveSessionState.Error)
+        assertEquals("PERMISSION_DENIED: caller lacks access", (error as ActiveSessionState.Error).message)
+        assertTrue(error.cause != null)
+    }
+
+    @Test
+    fun sessionResultDistinction_differentiatesNoSessionFromException() {
+        // When there is truly no session, Result.success(null) is returned
+        val noSessionResult: Result<Map<String, Any>?> = Result.success(null)
+        assertTrue(noSessionResult.isSuccess)
+        assertEquals(null, noSessionResult.getOrNull())
+
+        // When a network/permission error occurs, Result.failure(Exception) is returned
+        val errorResult: Result<Map<String, Any>?> = Result.failure(Exception("ConnectException: failed to connect to /10.0.2.2 (port 8080)"))
+        assertTrue(errorResult.isFailure)
+        assertEquals(null, errorResult.getOrNull())
+        assertTrue(errorResult.exceptionOrNull()?.message?.contains("ConnectException") == true)
+    }
 }

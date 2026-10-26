@@ -36,8 +36,14 @@ object FirebaseEmulatorConfig {
     private var isConfigured = false
 
     fun setup(enabled: Boolean = isEmulatorEnabled, host: String = emulatorHost) {
-        if (!enabled || isConfigured) return
+        if (!enabled || isConfigured) {
+            if (!isConfigured) {
+                Log.i("FirebaseEmulator", "Firebase Emulator disabled. Connecting directly to production Firebase services.")
+            }
+            return
+        }
         if (host.equals("cloud", ignoreCase = true) || host.equals("none", ignoreCase = true) || host.isBlank()) {
+            Log.i("FirebaseEmulator", "Firebase Emulator host configured as '$host'. Connecting directly to production Firebase services.")
             return
         }
         try {

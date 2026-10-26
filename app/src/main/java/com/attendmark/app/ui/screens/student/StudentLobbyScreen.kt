@@ -24,6 +24,8 @@ import com.attendmark.app.data.Course
 import com.attendmark.app.data.FirestoreRepository
 import com.attendmark.app.data.UserPreferences
 import com.attendmark.app.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -54,17 +56,25 @@ fun StudentLobbyScreen(
             repo.getCoursesForStudent(userEmail) { list ->
                 courses.clear()
                 courses.addAll(list)
-                // Check which ones have live sessions
-                scope.launch {
-                    val newLiveCodes = mutableSetOf<String>()
-                    for (course in list) {
-                        if (repo.hasActiveCourseSession(course.classCode)) {
-                            newLiveCodes.add(course.classCode)
-                        }
-                    }
-                    liveCodes = newLiveCodes
-                }
             }
+        }
+    }
+
+    // Reactively refresh live active sessions for all enrolled courses
+    LaunchedEffect(courses.toList()) {
+        if (courses.isNotEmpty()) {
+            while (isActive) {
+                val newLiveCodes = mutableSetOf<String>()
+                for (course in courses) {
+                    if (repo.hasActiveCourseSession(course.classCode)) {
+                        newLiveCodes.add(course.classCode)
+                    }
+                }
+                liveCodes = newLiveCodes
+                kotlinx.coroutines.delay(4000)
+            }
+        } else {
+            liveCodes = emptySet()
         }
     }
 

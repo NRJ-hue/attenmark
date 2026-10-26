@@ -21,7 +21,7 @@ android {
 
     buildTypes {
         debug {
-            val host = (project.findProperty("emulatorHost") as? String)?.takeIf { it.isNotBlank() } ?: "10.0.2.2"
+            val host = (project.findProperty("emulatorHost") as? String)?.takeIf { it.isNotBlank() } ?: "cloud"
             buildConfigField("String", "EMULATOR_HOST", "\"$host\"")
             val defaultBackend = if (host == "127.0.0.1") "http://127.0.0.1:3000" else if (host == "10.0.2.2") "http://10.0.2.2:3000" else "https://attenmark.onrender.com"
             val backendUrl = (project.findProperty("backendUrl") as? String)?.takeIf { it.isNotBlank() } ?: defaultBackend

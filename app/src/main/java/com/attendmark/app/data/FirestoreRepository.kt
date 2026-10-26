@@ -12,6 +12,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
+sealed class ActiveSessionState {
+    object Loading : ActiveSessionState()
+    object None : ActiveSessionState()
+    data class Active(val sessionData: Map<String, Any>) : ActiveSessionState()
+    data class Error(val message: String, val cause: Throwable? = null) : ActiveSessionState()
+}
+
 class FirestoreRepository {
 
     private val db = FirebaseFirestore.getInstance()
@@ -144,9 +151,13 @@ class FirestoreRepository {
     suspend fun hasActiveCourseSession(classCode: String): Boolean {
         return try {
             val doc = sessionsCollection.document(classCode).get().await()
-            doc.exists() && doc.getBoolean("isActive") == true &&
-                System.currentTimeMillis() < (doc.getLong("expiresAt") ?: 0L)
-        } catch (e: Exception) { false }
+            val isActive = doc.getBoolean("isActive") == true
+            val expiresAt = (doc.get("expiresAt") as? Number)?.toLong() ?: 0L
+            doc.exists() && isActive && System.currentTimeMillis() < expiresAt
+        } catch (e: Exception) {
+            Log.e("FirestoreRepository", "Error checking active session for $classCode", e)
+            false
+        }
     }
 
     // ---- Session Management ----
@@ -223,21 +234,75 @@ class FirestoreRepository {
         }
     }
 
-    suspend fun getActiveSession(courseCode: String): Map<String, Any>? {
+    suspend fun getActiveSessionResult(courseCode: String): Result<Map<String, Any>?> {
         return try {
             val doc = sessionsCollection.document(courseCode).get().await()
             if (doc.exists() && doc.getBoolean("isActive") == true) {
-                val expiresAt = doc.getLong("expiresAt") ?: 0L
+                val expiresAt = (doc.get("expiresAt") as? Number)?.toLong() ?: 0L
                 if (System.currentTimeMillis() < expiresAt) {
-                    doc.data
+                    Result.success(doc.data)
                 } else {
                     // Session expired lazily
-                    null
+                    Result.success(null)
                 }
-            } else null
+            } else {
+                Result.success(null)
+            }
         } catch (e: Exception) {
-            Log.e("FirestoreRepository", "Error getting session", e)
-            null
+            Log.e("FirestoreRepository", "Error getting session for $courseCode", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getActiveSession(courseCode: String): Map<String, Any>? {
+        return getActiveSessionResult(courseCode).getOrNull()
+    }
+
+    fun getActiveSessionStateFlow(courseCode: String): Flow<ActiveSessionState> = callbackFlow {
+        val listener = sessionsCollection.document(courseCode)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e("FirestoreRepository", "Error listening to active session for $courseCode", error)
+                    trySend(ActiveSessionState.Error(error.localizedMessage ?: "Firestore error listening to session", error))
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && snapshot.exists() && snapshot.getBoolean("isActive") == true) {
+                    val expiresAt = (snapshot.get("expiresAt") as? Number)?.toLong() ?: 0L
+                    if (System.currentTimeMillis() < expiresAt) {
+                        trySend(ActiveSessionState.Active(snapshot.data ?: emptyMap()))
+                    } else {
+                        trySend(ActiveSessionState.None)
+                    }
+                } else {
+                    trySend(ActiveSessionState.None)
+                }
+            }
+        awaitClose {
+            listener.remove()
+        }
+    }
+
+    fun getActiveSessionFlow(courseCode: String): Flow<Map<String, Any>?> = callbackFlow {
+        val listener = sessionsCollection.document(courseCode)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e("FirestoreRepository", "Error listening to active session for $courseCode", error)
+                    trySend(null)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && snapshot.exists() && snapshot.getBoolean("isActive") == true) {
+                    val expiresAt = (snapshot.get("expiresAt") as? Number)?.toLong() ?: 0L
+                    if (System.currentTimeMillis() < expiresAt) {
+                        trySend(snapshot.data)
+                    } else {
+                        trySend(null)
+                    }
+                } else {
+                    trySend(null)
+                }
+            }
+        awaitClose {
+            listener.remove()
         }
     }
 

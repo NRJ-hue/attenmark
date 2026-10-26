@@ -99,18 +99,24 @@ fun QrScannerScreen(
         isCheckingSession = true
         sessionErrorMessage = null
         scope.launch {
-            val session = withContext(Dispatchers.IO) {
-                firestoreRepo.getActiveSession(courseCode)
+            val result = withContext(Dispatchers.IO) {
+                firestoreRepo.getActiveSessionResult(courseCode)
             }
-            if (session != null) {
-                val sId = session["sessionId"] as? String ?: ""
-                if (sId.isNotBlank()) {
-                    resolvedSessionId = sId
+            if (result.isSuccess) {
+                val session = result.getOrNull()
+                if (session != null) {
+                    val sId = session["sessionId"] as? String ?: ""
+                    if (sId.isNotBlank()) {
+                        resolvedSessionId = sId
+                    } else {
+                        sessionErrorMessage = "Active session is missing an authoritative session ID."
+                    }
                 } else {
-                    sessionErrorMessage = "Active session is missing an authoritative session ID."
+                    sessionErrorMessage = "No active attendance session found for $courseCode. Ask your faculty to start a session."
                 }
             } else {
-                sessionErrorMessage = "No active attendance session found for $courseCode. Ask your faculty to start a session."
+                val ex = result.exceptionOrNull()
+                sessionErrorMessage = "Unable to connect to session service: ${ex?.localizedMessage ?: "Unknown network error"}. Please check your connection."
             }
             isCheckingSession = false
         }
