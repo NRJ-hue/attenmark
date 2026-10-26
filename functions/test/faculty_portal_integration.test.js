@@ -327,5 +327,74 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       // Clean up Session B
       await stopAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
     });
+
+    it("allows faculty to approve and reject attendance reviews from an ended/inactive session", async function () {
+      const facultyAuth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+
+      // Create Session C and stop it immediately so it is ended
+      const sessionC = await startAttendanceSessionCore(db, facultyAuth, {
+        courseCode: COURSE_CODE,
+        latitude: 37.7749,
+        longitude: -122.4194
+      });
+      await stopAttendanceSessionCore(db, facultyAuth, { courseCode: COURSE_CODE });
+
+      // Verify session C is inactive in Firestore
+      const sessionDoc = await db.collection("attendance_sessions").doc(sessionC.sessionId).get();
+      assert.strictEqual(sessionDoc.data().isActive, false, "Session must be inactive");
+
+      // Seed a QR attendance record with status 'REVIEW' from this ended session
+      const qrReviewRecordId = `${sessionC.sessionId}_${STUDENT_1_UID}`;
+      await db.collection("attendance_records").doc(qrReviewRecordId).set({
+        sessionId: sessionC.sessionId,
+        studentUid: STUDENT_1_UID,
+        studentName: "Alice Portal",
+        studentEmail: STUDENT_1_EMAIL,
+        courseCode: COURSE_CODE,
+        status: "REVIEW",
+        rejectionReason: "GPS position is uncertain (within 100m geofence)",
+        overallScore: 77,
+        timestamp: Date.now() - 3600000
+      });
+
+      // Seed a manual attendance request with status 'REVIEW' from this ended session
+      const manualReviewRecordId = `${sessionC.sessionId}_${STUDENT_2_UID}`;
+      await db.collection("manual_attendance_requests").doc(manualReviewRecordId).set({
+        sessionId: sessionC.sessionId,
+        studentUid: STUDENT_2_UID,
+        studentName: "Bob Portal",
+        studentEmail: STUDENT_2_EMAIL,
+        courseCode: COURSE_CODE,
+        status: "REVIEW",
+        rejectionReason: "Manual Request: Camera malfunction",
+        timestamp: Date.now() - 3600000
+      });
+
+      // Owning faculty approves the QR review record
+      await db.collection("attendance_records").doc(qrReviewRecordId).update({
+        status: "APPROVED",
+        rejectionReason: null
+      });
+
+      // Owning faculty rejects the manual review record
+      await db.collection("manual_attendance_requests").doc(manualReviewRecordId).update({
+        status: "REJECTED",
+        rejectionReason: "Rejected by faculty: Insufficient classroom justification"
+      });
+
+      // Verify the QR record is now APPROVED and rejectionReason is cleared
+      const updatedQrRecord = await db.collection("attendance_records").doc(qrReviewRecordId).get();
+      assert.strictEqual(updatedQrRecord.data().status, "APPROVED");
+      assert.strictEqual(updatedQrRecord.data().rejectionReason, null);
+
+      // Verify the manual request is now REJECTED with note
+      const updatedManualRequest = await db.collection("manual_attendance_requests").doc(manualReviewRecordId).get();
+      assert.strictEqual(updatedManualRequest.data().status, "REJECTED");
+      assert.strictEqual(updatedManualRequest.data().rejectionReason, "Rejected by faculty: Insufficient classroom justification");
+
+      // Verify that deciding reviews on an ended session does NOT restart the session
+      const sessionDocAfter = await db.collection("attendance_sessions").doc(sessionC.sessionId).get();
+      assert.strictEqual(sessionDocAfter.data().isActive, false, "Deciding reviews must not restart the session");
+    });
   });
 });

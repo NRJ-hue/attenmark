@@ -85,9 +85,13 @@ async function startAttendanceSessionCore(db, authContext, data) {
   const startedAt = Date.now();
   const expiresAt = startedAt + durationMinutes * 60 * 1000;
 
-  // Determine geofence radius: exactly 100m in local demo / emulator mode, exactly 50m in production.
-  // The effective radius is determined strictly by trusted server configuration.
-  // Clients cannot request an enlarged (e.g. 999999m) or unexpectedly reduced (e.g. 1m) radius.
+  // Determine geofence radius:
+  // 1. Authoritative server environment override (e.g. GEOFENCE_RADIUS_METERS=100 for hosted demo)
+  //    takes strict precedence. Clients cannot alter this value.
+  // 2. Local demo / test mode defaults to 100m.
+  //    Explicit client request of 50m is accepted strictly in demo/test mode to facilitate unit tests.
+  // 3. Normal production default (when no server override is set) is strictly 50m.
+  // In ALL cases, arbitrary client inflation (e.g. 999999m) or reduction (e.g. 1m) is rejected.
   const isDemoMode = Boolean(
     process.env.FUNCTIONS_EMULATOR === "true" ||
     process.env.FIRESTORE_EMULATOR_HOST ||
@@ -96,9 +100,16 @@ async function startAttendanceSessionCore(db, authContext, data) {
     config.isDemoMode
   );
 
+  const serverOverride = (typeof config.parseServerGeofenceOverride === "function")
+    ? config.parseServerGeofenceOverride()
+    : null;
+
   let geofenceRadiusMeters;
-  if (!isDemoMode) {
-    // In production, radius is strictly 50m. Clients cannot alter this value.
+  if (serverOverride !== null) {
+    // Authoritative server-side override (e.g. GEOFENCE_RADIUS_METERS=100 on Render)
+    geofenceRadiusMeters = serverOverride;
+  } else if (!isDemoMode) {
+    // Normal production default is strictly 50m. Clients cannot alter this value.
     geofenceRadiusMeters = config.PRODUCTION_GEOFENCE_RADIUS_METERS;
   } else {
     // In demo/test mode, default is strictly 100m.

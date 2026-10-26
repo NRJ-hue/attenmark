@@ -11,6 +11,41 @@ const isDemoMode = Boolean(
   process.env.NODE_ENV === "test"
 );
 
+/**
+ * Parses and validates an authoritative server-side geofence radius override
+ * from environment variables.
+ *
+ * Supported settings:
+ * - GEOFENCE_RADIUS_METERS: Positive integer in [10, 1000] (e.g. 100 for hosted college demo)
+ * - DEMO_MODE=true / COLLEGE_DEMO=true: Convenience flag setting radius to 100m
+ *
+ * Returns the validated integer radius in meters, or null if no valid override is configured.
+ */
+function parseServerGeofenceOverride() {
+  const raw = process.env.GEOFENCE_RADIUS_METERS;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 10 && parsed <= 1000) {
+      return Math.round(parsed);
+    }
+  }
+  if (process.env.DEMO_MODE === "true" || process.env.COLLEGE_DEMO === "true") {
+    return 100;
+  }
+  return null;
+}
+
+function getEffectiveGeofenceRadius() {
+  const override = parseServerGeofenceOverride();
+  if (override !== null) {
+    return override;
+  }
+  if (isDemoMode) {
+    return 100;
+  }
+  return 50;
+}
+
 module.exports = {
   // Server-enforced lifetime of each individual QR token
   TOKEN_VALIDITY_MS: 15000, // 15 seconds
@@ -25,8 +60,14 @@ module.exports = {
   PRODUCTION_GEOFENCE_RADIUS_METERS: 50,
   DEMO_GEOFENCE_RADIUS_METERS: 100,
 
+  // Server-controlled override helper
+  parseServerGeofenceOverride,
+  getEffectiveGeofenceRadius,
+
   // Maximum allowed distance in meters between student and classroom
-  LOCATION_THRESHOLD_METERS: isDemoMode ? 100 : 50,
+  get LOCATION_THRESHOLD_METERS() {
+    return getEffectiveGeofenceRadius();
+  },
 
   // Environment indicator
   isDemoMode

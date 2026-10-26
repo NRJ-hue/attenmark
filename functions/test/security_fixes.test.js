@@ -348,6 +348,111 @@ describe("Security Fix B — Server-Controlled Geofence Radius Policy", function
     assert.strictEqual(config.PRODUCTION_GEOFENCE_RADIUS_METERS, 50,
       "Production geofence radius must be exactly 50m");
   });
+
+  it("enforces GEOFENCE_RADIUS_METERS=100 server override in production mode", async function () {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+    const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
+    const origGeofenceEnv = process.env.GEOFENCE_RADIUS_METERS;
+    const origConfigDemo = config.isDemoMode;
+
+    try {
+      process.env.NODE_ENV = "production";
+      process.env.GEOFENCE_RADIUS_METERS = "100";
+      delete process.env.FIRESTORE_EMULATOR_HOST;
+      delete process.env.FUNCTIONS_EMULATOR;
+      config.isDemoMode = false;
+
+      const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      const result = await startAttendanceSessionCore(db, auth, {
+        courseCode: COURSE_CODE,
+        ...validCoords
+      });
+
+      assert.strictEqual(result.geofenceRadiusMeters, 100,
+        "Server override GEOFENCE_RADIUS_METERS=100 must enforce 100m even in production mode");
+      assert.strictEqual(result.location.geofenceRadiusMeters, 100);
+
+      const sessionDoc = await db.collection("sessions").doc(COURSE_CODE).get();
+      assert.strictEqual(sessionDoc.data().geofenceRadiusMeters, 100);
+
+      // Client cannot tamper with or reduce the server-configured radius
+      const tamperAttempt = await startAttendanceSessionCore(db, auth, {
+        courseCode: COURSE_CODE,
+        ...validCoords,
+        geofenceRadiusMeters: 999999
+      });
+      assert.strictEqual(tamperAttempt.geofenceRadiusMeters, 100,
+        "Client requesting 999999m cannot override server GEOFENCE_RADIUS_METERS=100");
+    } finally {
+      process.env.NODE_ENV = origNodeEnv;
+      if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
+      if (origFuncEmulator) process.env.FUNCTIONS_EMULATOR = origFuncEmulator;
+      if (origGeofenceEnv !== undefined) process.env.GEOFENCE_RADIUS_METERS = origGeofenceEnv;
+      else delete process.env.GEOFENCE_RADIUS_METERS;
+      config.isDemoMode = origConfigDemo;
+    }
+  });
+
+  it("safely falls back to 50m when GEOFENCE_RADIUS_METERS has invalid non-numeric or out-of-range values", async function () {
+    const origNodeEnv = process.env.NODE_ENV;
+    const origFirestoreHost = process.env.FIRESTORE_EMULATOR_HOST;
+    const origFuncEmulator = process.env.FUNCTIONS_EMULATOR;
+    const origGeofenceEnv = process.env.GEOFENCE_RADIUS_METERS;
+    const origConfigDemo = config.isDemoMode;
+
+    try {
+      process.env.NODE_ENV = "production";
+      delete process.env.FIRESTORE_EMULATOR_HOST;
+      delete process.env.FUNCTIONS_EMULATOR;
+      config.isDemoMode = false;
+
+      const auth = { uid: FACULTY_UID, email: FACULTY_EMAIL };
+      for (const invalidVal of ["invalid_text", "-50", "9999", "1", ""]) {
+        process.env.GEOFENCE_RADIUS_METERS = invalidVal;
+        const result = await startAttendanceSessionCore(db, auth, {
+          courseCode: COURSE_CODE,
+          ...validCoords
+        });
+        assert.strictEqual(result.geofenceRadiusMeters, 50,
+          `Expected fallback to 50m in production when GEOFENCE_RADIUS_METERS="${invalidVal}"`);
+      }
+    } finally {
+      process.env.NODE_ENV = origNodeEnv;
+      if (origFirestoreHost) process.env.FIRESTORE_EMULATOR_HOST = origFirestoreHost;
+      if (origFuncEmulator) process.env.FUNCTIONS_EMULATOR = origFuncEmulator;
+      if (origGeofenceEnv !== undefined) process.env.GEOFENCE_RADIUS_METERS = origGeofenceEnv;
+      else delete process.env.GEOFENCE_RADIUS_METERS;
+      config.isDemoMode = origConfigDemo;
+    }
+  });
+
+  it("activates 100m demo radius when DEMO_MODE=true or COLLEGE_DEMO=true", function () {
+    const origDemoMode = process.env.DEMO_MODE;
+    const origCollegeDemo = process.env.COLLEGE_DEMO;
+    const origGeofence = process.env.GEOFENCE_RADIUS_METERS;
+
+    try {
+      delete process.env.GEOFENCE_RADIUS_METERS;
+
+      process.env.DEMO_MODE = "true";
+      delete process.env.COLLEGE_DEMO;
+      assert.strictEqual(config.parseServerGeofenceOverride(), 100);
+      assert.strictEqual(config.getEffectiveGeofenceRadius(), 100);
+
+      delete process.env.DEMO_MODE;
+      process.env.COLLEGE_DEMO = "true";
+      assert.strictEqual(config.parseServerGeofenceOverride(), 100);
+      assert.strictEqual(config.getEffectiveGeofenceRadius(), 100);
+    } finally {
+      if (origDemoMode !== undefined) process.env.DEMO_MODE = origDemoMode;
+      else delete process.env.DEMO_MODE;
+      if (origCollegeDemo !== undefined) process.env.COLLEGE_DEMO = origCollegeDemo;
+      else delete process.env.COLLEGE_DEMO;
+      if (origGeofence !== undefined) process.env.GEOFENCE_RADIUS_METERS = origGeofence;
+      else delete process.env.GEOFENCE_RADIUS_METERS;
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

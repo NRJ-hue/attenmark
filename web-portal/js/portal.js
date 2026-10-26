@@ -26,7 +26,10 @@ import {
 } from "./firebase-config.js";
 import {
   generateAttendanceWorkbook,
-  detectPendingReviews
+  detectPendingReviews,
+  extractRollNo,
+  formatDateKey,
+  formatTimePart
 } from "./attendance-exporter.js";
 
 // ─── Application State ────────────────────────────────────────────────────────
@@ -38,6 +41,7 @@ let activeSession = null;
 let attendanceRecords = [];
 let manualRequests = [];
 let allFacultyManualRequests = [];
+let allFacultyAttendanceRecords = [];
 let currentTab = "all";
 let dashManualTab = "pending";
 
@@ -47,6 +51,7 @@ let sessionDurationInterval = null;
 let recordsUnsubscribe = null;
 let manualRequestsUnsubscribe = null;
 let dashManualUnsubscribe = null;
+let dashRecordsUnsubscribe = null;
 let coursesUnsubscribe = null;
 let qrCodeInstance = null;
 let currentRejectIsManual = false;
@@ -99,6 +104,7 @@ const dashManualPendingCount = document.getElementById("dash-manual-pending-coun
 const dashManualAllCount = document.getElementById("dash-manual-all-count");
 const dashboardManualTableBody = document.getElementById("dashboard-manual-table-body");
 const dashboardManualEmpty = document.getElementById("dashboard-manual-empty");
+const dashReviewCourseFilter = document.getElementById("dash-review-course-filter");
 const btnOpenCreateCourse = document.getElementById("btn-open-create-course");
 const modalCreateCourse = document.getElementById("modal-create-course");
 const formCreateCourse = document.getElementById("form-create-course");
@@ -371,7 +377,9 @@ onAuthStateChanged(auth, async (user) => {
     cleanUpActiveSession();
     if (coursesUnsubscribe) coursesUnsubscribe();
     if (dashManualUnsubscribe) dashManualUnsubscribe();
+    if (dashRecordsUnsubscribe) dashRecordsUnsubscribe();
     allFacultyManualRequests = [];
+    allFacultyAttendanceRecords = [];
     if (bootstrapRetryContainer) bootstrapRetryContainer.style.display = "none";
     switchView("login");
   }
@@ -491,13 +499,14 @@ function listenToFacultyCourses() {
   coursesUnsubscribe = onSnapshot(q, (snapshot) => {
     courses = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderCoursesGrid();
-    listenToAllFacultyManualRequests();
+    listenToAllFacultyReviews();
   }, (err) => {
     console.error("Error listening to courses:", err);
   });
 }
 
 function renderCoursesGrid() {
+  updateDashReviewCourseFilterOptions();
   coursesGrid.innerHTML = "";
 
   const activeCourses = courses.filter((c) => !c.isArchived);
@@ -556,6 +565,9 @@ function renderCoursesGrid() {
         <button class="btn btn-outline btn-sm btn-export-course" title="Export Course Attendance to Excel" style="width: 100%; color: #34d399; border-color: rgba(52,211,153,0.4); background: rgba(52,211,153,0.06); font-weight: 600;">
           📊 Export Attendance (.xlsx)
         </button>
+        <button class="btn btn-outline btn-sm btn-course-review-queue" title="Review Attendance Queue for this course" style="width: 100%; color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.06); font-weight: 600;">
+          📋 Review Attendance Queue
+        </button>
       </div>
     `;
 
@@ -563,6 +575,13 @@ function renderCoursesGrid() {
     if (btnManage) {
       btnManage.addEventListener("click", () => {
         openCourseSession(course);
+      });
+    }
+
+    const btnReviewQueue = card.querySelector(".btn-course-review-queue");
+    if (btnReviewQueue) {
+      btnReviewQueue.addEventListener("click", () => {
+        navigateToCourseReviewQueue(course.classCode);
       });
     }
 
@@ -680,51 +699,132 @@ if (tabCoursesArchived) {
   });
 }
 
-// ─── 2B. Persistent Faculty Manual Requests View ──────────────────────────────
-function listenToAllFacultyManualRequests() {
+// ─── 2B. Persistent Faculty Attendance Review Queue ───────────────────────────
+function updateDashReviewCourseFilterOptions() {
+  if (!dashReviewCourseFilter) return;
+  const currentVal = dashReviewCourseFilter.value;
+  dashReviewCourseFilter.innerHTML = `<option value="ALL">All Courses</option>`;
+  courses.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c.classCode;
+    opt.textContent = `${c.classCode} — ${c.name}`;
+    dashReviewCourseFilter.appendChild(opt);
+  });
+  if (courses.some((c) => c.classCode === currentVal)) {
+    dashReviewCourseFilter.value = currentVal;
+  } else {
+    dashReviewCourseFilter.value = "ALL";
+  }
+}
+
+function navigateToCourseReviewQueue(courseCode) {
+  if (sessionView && sessionView.classList.contains("active")) {
+    switchView("dashboard");
+  }
+  if (dashReviewCourseFilter && courseCode) {
+    dashReviewCourseFilter.value = courseCode;
+  }
+  if (tabDashManualPending) {
+    tabDashManualPending.click();
+  } else {
+    renderDashboardReviewQueueTable();
+  }
+  const panel = document.getElementById("dashboard-manual-panel");
+  if (panel) {
+    panel.scrollIntoView({ behavior: "smooth" });
+  }
+}
+
+function listenToAllFacultyReviews() {
   if (!currentFacultyUser) return;
-  if (dashManualUnsubscribe) dashManualUnsubscribe();
+  if (dashManualUnsubscribe) {
+    dashManualUnsubscribe();
+    dashManualUnsubscribe = null;
+  }
+  if (dashRecordsUnsubscribe) {
+    dashRecordsUnsubscribe();
+    dashRecordsUnsubscribe = null;
+  }
 
   const courseCodes = courses.map((c) => c.classCode);
   if (courseCodes.length === 0) {
     allFacultyManualRequests = [];
-    renderDashboardManualRequestsTable();
+    allFacultyAttendanceRecords = [];
+    renderDashboardReviewQueueTable();
     return;
   }
 
-  // Query manual requests for all courses owned by this faculty
-  const q = query(
+  const queryCodes = courseCodes.slice(0, 30);
+
+  // 1. Query manual requests for all courses owned by this faculty
+  const qManual = query(
     collection(db, "manual_attendance_requests"),
-    where("courseCode", "in", courseCodes.slice(0, 30))
+    where("courseCode", "in", queryCodes)
   );
 
-  dashManualUnsubscribe = onSnapshot(q, (snapshot) => {
+  dashManualUnsubscribe = onSnapshot(qManual, (snapshot) => {
     allFacultyManualRequests = snapshot.docs
       .map((d) => ({ id: d.id, ...d.data(), isManualRequest: true }))
       .filter((r) => courseCodes.includes(r.courseCode)); // Double safeguard: strictly courses owned by this faculty
 
-    renderDashboardManualRequestsTable();
+    renderDashboardReviewQueueTable();
   }, (err) => {
     console.error("Error listening to faculty manual requests:", err);
   });
+
+  // 2. Query QR attendance records for all courses owned by this faculty
+  const qRecords = query(
+    collection(db, "attendance_records"),
+    where("courseCode", "in", queryCodes)
+  );
+
+  dashRecordsUnsubscribe = onSnapshot(qRecords, (snapshot) => {
+    allFacultyAttendanceRecords = snapshot.docs
+      .map((d) => ({ id: d.id, ...d.data(), isManualRequest: false }))
+      .filter((r) => courseCodes.includes(r.courseCode));
+
+    renderDashboardReviewQueueTable();
+  }, (err) => {
+    console.error("Error listening to faculty attendance records:", err);
+  });
 }
 
-function renderDashboardManualRequestsTable() {
+function renderDashboardReviewQueueTable() {
   if (!dashboardManualTableBody) return;
   dashboardManualTableBody.innerHTML = "";
 
-  const pendingList = allFacultyManualRequests.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
-  if (dashManualPendingCount) dashManualPendingCount.textContent = pendingList.length;
-  if (dashManualAllCount) dashManualAllCount.textContent = allFacultyManualRequests.length;
+  const courseCodes = courses.map((c) => c.classCode);
+  const selectedCourse = dashReviewCourseFilter ? dashReviewCourseFilter.value : "ALL";
 
-  const displayList = dashManualTab === "pending" ? pendingList : allFacultyManualRequests;
+  // Final records in attendance_records take precedence if a student has both for the same session
+  const verifiedKeys = new Set(allFacultyAttendanceRecords.map((r) => `${r.sessionId || ""}_${r.studentUid || ""}`));
+  const nonDuplicateManual = allFacultyManualRequests.filter((m) => !verifiedKeys.has(`${m.sessionId || ""}_${m.studentUid || ""}`));
+  let combined = [...allFacultyAttendanceRecords, ...nonDuplicateManual];
+
+  // Double safeguard: strictly courses owned by this faculty
+  combined = combined.filter((r) => courseCodes.includes(r.courseCode));
+
+  // Filter by selected course
+  if (selectedCourse && selectedCourse !== "ALL") {
+    combined = combined.filter((r) => r.courseCode === selectedCourse);
+  }
+
+  // Sort descending by timestamp
+  combined.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  const pendingList = combined.filter((r) => r.status === "REVIEW" || r.status === "PENDING");
+  if (dashManualPendingCount) dashManualPendingCount.textContent = pendingList.length;
+  if (dashManualAllCount) dashManualAllCount.textContent = combined.length;
+
+  const displayList = dashManualTab === "pending" ? pendingList : combined;
 
   if (displayList.length === 0) {
     if (dashboardManualEmpty) {
       dashboardManualEmpty.style.display = "block";
+      const courseText = selectedCourse !== "ALL" ? ` for course ${selectedCourse}` : " across your courses";
       dashboardManualEmpty.textContent = dashManualTab === "pending"
-        ? "No pending manual requests across your courses."
-        : "No manual attendance requests recorded.";
+        ? `No pending reviews${courseText}.`
+        : `No attendance reviews recorded${courseText}.`;
     }
     return;
   }
@@ -734,7 +834,10 @@ function renderDashboardManualRequestsTable() {
   displayList.forEach((req) => {
     const course = courses.find((c) => c.classCode === req.courseCode);
     const courseLabel = course ? `${escapeHtml(req.courseCode)} — ${escapeHtml(course.name)}` : escapeHtml(req.courseCode);
-    const formattedTime = req.timestamp ? new Date(req.timestamp).toLocaleString() : "—";
+    const isManual = Boolean(req.isManualRequest || req.matchResult === "MANUAL_REQUEST");
+    const formattedDate = req.timestamp ? formatDateKey(req.timestamp) : "—";
+    const formattedTime = req.timestamp ? formatTimePart(req.timestamp) : "";
+    const rollNo = extractRollNo(req.studentEmail);
 
     let badgeClass = "badge-review";
     if (req.status === "APPROVED") badgeClass = "badge-approved";
@@ -744,30 +847,48 @@ function renderDashboardManualRequestsTable() {
     if (req.status === "REVIEW" || req.status === "PENDING") {
       actionsHtml = `
         <div style="display: flex; gap: 0.4rem;">
-          <button class="btn btn-success btn-sm btn-approve" data-id="${escapeHtml(req.id)}" data-manual="true">Approve</button>
-          <button class="btn btn-danger btn-sm btn-reject" data-id="${escapeHtml(req.id)}" data-manual="true">Reject</button>
+          <button class="btn btn-success btn-sm btn-approve" data-id="${escapeHtml(req.id)}" data-manual="${isManual ? "true" : "false"}">Approve</button>
+          <button class="btn btn-danger btn-sm btn-reject" data-id="${escapeHtml(req.id)}" data-manual="${isManual ? "true" : "false"}">Reject</button>
         </div>
       `;
     }
 
+    const typeBadge = isManual
+      ? `<span class="badge badge-manual" style="background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3);">📝 Manual</span>`
+      : `<span class="badge" style="background: rgba(56,189,248,0.15); color: #38bdf8; border: 1px solid rgba(56,189,248,0.3);">📱 QR Scan</span>`;
+
+    const scoreDisplay = isManual
+      ? `<span style="color: #f59e0b; font-weight: 600;">0% (Manual)</span>`
+      : `<strong>${req.overallScore !== undefined ? req.overallScore : (req.trustScore !== undefined ? req.trustScore : "—")}%</strong>` +
+        (req.matchPercentage ? `<div style="font-size: 0.75rem; color: var(--text-muted);">Match: ${req.matchPercentage}%</div>` : "");
+
+    const noteDisplay = req.rejectionReason || req.reviewNote || (req.status === "REVIEW" ? "Awaiting faculty review" : "—");
+
     const row = document.createElement("tr");
     row.innerHTML = `
       <td><strong>${courseLabel}</strong></td>
-      <td><strong>${escapeHtml(req.studentName || "Student")}</strong></td>
-      <td><code>${escapeHtml(req.studentEmail || "")}</code></td>
-      <td style="font-size: 0.85rem; max-width: 250px; word-break: break-word;">${escapeHtml(req.rejectionReason || "—")}</td>
-      <td style="font-size: 0.85rem; color: var(--text-muted);">${formattedTime}</td>
+      <td style="font-size: 0.85rem;">
+        <div>${escapeHtml(formattedDate)}</div>
+        <div style="color: var(--text-muted); font-size: 0.75rem;">${escapeHtml(formattedTime)}</div>
+      </td>
+      <td>
+        <strong>${escapeHtml(req.studentName || "Student")}</strong>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(rollNo)} (${escapeHtml(req.studentEmail || "")})</div>
+      </td>
+      <td>${typeBadge}</td>
+      <td>${scoreDisplay}</td>
+      <td style="font-size: 0.85rem; max-width: 240px; word-break: break-word;">${escapeHtml(noteDisplay)}</td>
       <td><span class="badge ${badgeClass}">${escapeHtml(req.status)}</span></td>
       <td>${actionsHtml}</td>
     `;
 
     const btnApprove = row.querySelector(".btn-approve");
     if (btnApprove) {
-      btnApprove.addEventListener("click", () => approveRecord(req.id, true));
+      btnApprove.addEventListener("click", () => approveRecord(req.id, isManual));
     }
     const btnReject = row.querySelector(".btn-reject");
     if (btnReject) {
-      btnReject.addEventListener("click", () => openRejectModal(req.id, true));
+      btnReject.addEventListener("click", () => openRejectModal(req.id, isManual));
     }
 
     dashboardManualTableBody.appendChild(row);
@@ -779,7 +900,7 @@ if (tabDashManualPending) {
     dashManualTab = "pending";
     tabDashManualPending.classList.add("active");
     if (tabDashManualAll) tabDashManualAll.classList.remove("active");
-    renderDashboardManualRequestsTable();
+    renderDashboardReviewQueueTable();
   });
 }
 
@@ -788,7 +909,13 @@ if (tabDashManualAll) {
     dashManualTab = "all";
     tabDashManualAll.classList.add("active");
     if (tabDashManualPending) tabDashManualPending.classList.remove("active");
-    renderDashboardManualRequestsTable();
+    renderDashboardReviewQueueTable();
+  });
+}
+
+if (dashReviewCourseFilter) {
+  dashReviewCourseFilter.addEventListener("change", () => {
+    renderDashboardReviewQueueTable();
   });
 }
 
@@ -1383,8 +1510,16 @@ async function approveRecord(recordId, isManual = false) {
 
       await batch.commit();
     } else {
+      const existingRecord = (allFacultyAttendanceRecords || []).find((r) => r.id === recordId) ||
+                             (attendanceRecords || []).find((r) => r.id === recordId);
+      if (existingRecord && existingRecord.status === "APPROVED") {
+        console.warn("Attendance record is already approved.");
+        return;
+      }
+
       await updateDoc(doc(db, "attendance_records", recordId), {
-        status: "APPROVED"
+        status: "APPROVED",
+        rejectionReason: null
       });
     }
   } catch (err) {
@@ -1613,16 +1748,16 @@ if (btnExportProvisional) {
 if (btnResolveReviewsFirst) {
   btnResolveReviewsFirst.addEventListener("click", () => {
     if (modalExportExcel) modalExportExcel.classList.remove("open");
-    // If in session view, switch to review tab
-    if (sessionView && sessionView.classList.contains("active")) {
-      const reviewTab = document.querySelector('.tab-btn[data-tab="review"]');
-      if (reviewTab) reviewTab.click();
-    } else {
-      // If in dashboard view, switch to pending manual requests tab
-      if (tabDashManualPending) tabDashManualPending.click();
-      const dashManualPanel = document.getElementById("dashboard-manual-panel");
-      if (dashManualPanel) dashManualPanel.scrollIntoView({ behavior: "smooth" });
+    if (!activeSession) {
+      switchView("dashboard");
     }
+    if (currentExportCourse && dashReviewCourseFilter) {
+      dashReviewCourseFilter.value = currentExportCourse.classCode;
+    }
+    if (tabDashManualPending) tabDashManualPending.click();
+    renderDashboardReviewQueueTable();
+    const dashManualPanel = document.getElementById("dashboard-manual-panel");
+    if (dashManualPanel) dashManualPanel.scrollIntoView({ behavior: "smooth" });
   });
 }
 

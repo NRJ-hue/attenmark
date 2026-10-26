@@ -156,20 +156,25 @@
         <!-- Rendered dynamically -->
       </div>
 
-      <!-- Persistent Faculty Manual Requests View -->
+      <!-- Persistent Faculty Attendance Review Queue -->
       <div id="dashboard-manual-panel" class="dashboard-manual-panel" style="margin-top: 2.5rem;">
-        <div class="section-header" style="margin-bottom: 1rem;">
+        <div class="section-header" style="margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; align-items: flex-end;">
           <div class="section-title">
-            <h2 style="font-size: 1.4rem;">Manual Attendance Requests</h2>
-            <p>Review and decide student manual attendance requests across your courses.</p>
+            <h2 style="font-size: 1.4rem;">Attendance Review Queue</h2>
+            <p>Review and decide pending QR submissions and manual attendance requests across active and completed sessions.</p>
           </div>
-          <div class="table-header-tabs" style="margin-bottom: 0;">
-            <button type="button" class="tab-btn active" id="tab-dash-manual-pending" data-dash-tab="pending">
-              Pending (<span id="dash-manual-pending-count">0</span>)
-            </button>
-            <button type="button" class="tab-btn" id="tab-dash-manual-all" data-dash-tab="all">
-              All History (<span id="dash-manual-all-count">0</span>)
-            </button>
+          <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+            <select id="dash-review-course-filter" class="form-input form-input-sm" style="max-width: 220px; padding: 0.4rem 0.6rem; font-size: 0.85rem; background: var(--bg-surface); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px;">
+              <option value="ALL">All Courses</option>
+            </select>
+            <div class="table-header-tabs" style="margin-bottom: 0;">
+              <button type="button" class="tab-btn active" id="tab-dash-manual-pending" data-dash-tab="pending">
+                Pending Reviews (<span id="dash-manual-pending-count">0</span>)
+              </button>
+              <button type="button" class="tab-btn" id="tab-dash-manual-all" data-dash-tab="all">
+                All History (<span id="dash-manual-all-count">0</span>)
+              </button>
+            </div>
           </div>
         </div>
 
@@ -179,10 +184,11 @@
               <thead>
                 <tr>
                   <th>Course</th>
-                  <th>Student Name</th>
-                  <th>Email</th>
-                  <th>Reason / Note</th>
-                  <th>Submitted At</th>
+                  <th>Session Date</th>
+                  <th>Student / Roll No</th>
+                  <th>Type</th>
+                  <th>Trust Score</th>
+                  <th>Review Note / Reason</th>
                   <th>Status</th>
                   <th>Actions</th>
                 </tr>
@@ -193,7 +199,7 @@
             </table>
           </div>
           <div id="dashboard-manual-empty" class="empty-state" style="display: none; padding: 2.5rem; text-align: center; color: var(--text-muted);">
-            No manual attendance requests found.
+            No attendance reviews found.
           </div>
         </div>
       </div>
