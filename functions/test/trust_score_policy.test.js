@@ -337,6 +337,112 @@ describe("Trust-Score Policy and Authoritative Attendance Submission", function 
         (err) => err.code === "permission-denied" && err.message.includes("GPS")
       );
     });
+
+    it("High score (77) with UNCERTAIN_ACCURACY GPS routes to REVIEW, not REJECTED or auto-APPROVED", async function () {
+      const res = await submitAttendanceRecordCore(
+        db,
+        { uid: STUDENT_UID, email: STUDENT_EMAIL },
+        {
+          sessionId: activeSessionId,
+          courseCode: COURSE_CODE,
+          overallScore: 77,
+          matchPercentage: 90,
+          matchResult: "STRONG_MATCH",
+          livenessChallenge: "BLINK",
+          livenessPassed: true,
+          gpsVerificationStatus: "UNCERTAIN_ACCURACY",
+          rejectionReason: "GPS accuracy is inconclusive; awaiting faculty review."
+        }
+      );
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.status, "REVIEW");
+      assert.strictEqual(res.autoApproved, false);
+      assert.strictEqual(res.overallScore, 77);
+      assert(res.rejectionReason.includes("inconclusive") || res.rejectionReason.includes("uncertain"));
+
+      const doc = await db.collection("attendance_records").doc(`${activeSessionId}_${STUDENT_UID}`).get();
+      assert.strictEqual(doc.data().status, "REVIEW");
+      assert.strictEqual(doc.data().autoApproved, false);
+      assert.strictEqual(doc.data().gpsVerificationStatus, "UNCERTAIN_ACCURACY");
+      assert(doc.data().rejectionReason.includes("inconclusive"));
+    });
+
+    it("High score (85) with uncertain distance message routes to REVIEW, not REJECTED", async function () {
+      const res = await submitAttendanceRecordCore(
+        db,
+        { uid: STUDENT_UID, email: STUDENT_EMAIL },
+        {
+          sessionId: activeSessionId,
+          courseCode: COURSE_CODE,
+          overallScore: 85,
+          matchPercentage: 95,
+          matchResult: "STRONG_MATCH",
+          livenessChallenge: "BLINK",
+          livenessPassed: true,
+          rejectionReason: "GPS position is uncertain: distance is 35m with ±20m accuracy for a 50m geofence."
+        }
+      );
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.status, "REVIEW");
+      assert.strictEqual(res.autoApproved, false);
+
+      const doc = await db.collection("attendance_records").doc(`${activeSessionId}_${STUDENT_UID}`).get();
+      assert.strictEqual(doc.data().status, "REVIEW");
+      assert.strictEqual(doc.data().autoApproved, false);
+      assert(doc.data().rejectionReason.includes("uncertain"));
+    });
+
+    it("Low score (35) with UNCERTAIN_ACCURACY GPS remains REJECTED (<40 threshold)", async function () {
+      const res = await submitAttendanceRecordCore(
+        db,
+        { uid: STUDENT_UID, email: STUDENT_EMAIL },
+        {
+          sessionId: activeSessionId,
+          courseCode: COURSE_CODE,
+          overallScore: 35,
+          matchPercentage: 25,
+          matchResult: "WEAK_MATCH",
+          livenessChallenge: "BLINK",
+          livenessPassed: true,
+          gpsVerificationStatus: "UNCERTAIN_ACCURACY",
+          rejectionReason: "GPS accuracy is inconclusive; awaiting faculty review."
+        }
+      );
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.status, "REJECTED");
+      assert.strictEqual(res.autoApproved, false);
+
+      const doc = await db.collection("attendance_records").doc(`${activeSessionId}_${STUDENT_UID}`).get();
+      assert.strictEqual(doc.data().status, "REJECTED");
+    });
+
+    it("High score (85) with explicit geofence violation is REJECTED", async function () {
+      const res = await submitAttendanceRecordCore(
+        db,
+        { uid: STUDENT_UID, email: STUDENT_EMAIL },
+        {
+          sessionId: activeSessionId,
+          courseCode: COURSE_CODE,
+          overallScore: 85,
+          matchPercentage: 95,
+          matchResult: "STRONG_MATCH",
+          livenessChallenge: "BLINK",
+          livenessPassed: true,
+          rejectionReason: "Location mismatch: You are 75m from the classroom (outside permitted geofence of 50m)."
+        }
+      );
+
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.status, "REJECTED");
+      assert.strictEqual(res.autoApproved, false);
+
+      const doc = await db.collection("attendance_records").doc(`${activeSessionId}_${STUDENT_UID}`).get();
+      assert.strictEqual(doc.data().status, "REJECTED");
+      assert(doc.data().rejectionReason.includes("Location mismatch"));
+    });
   });
 
   // ─── 3. Validation & Security Enforcement ─────────────────────────────────────

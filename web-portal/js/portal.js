@@ -1299,7 +1299,7 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
     } else {
       badgeClass = "badge-review";
       badgeLabel = "⏳ Under Review";
-      badgeTitle = "Trust score between 40 and 75 awaiting faculty decision";
+      badgeTitle = rec.rejectionReason || "Trust score between 40 and 75 awaiting faculty decision";
     }
 
     let actionsHtml = `<span style="color: var(--text-muted); font-size: 0.8rem;">None required</span>`;
@@ -1316,7 +1316,7 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
       <td>
         <strong>${escapeHtml(rec.studentName || "Student")}</strong>
         ${isManual ? `<span class="badge badge-manual" style="margin-left: 0.3rem;">Manual Request (No QR)</span>` : ""}
-        ${rec.rejectionReason ? `<div style="font-size: 0.75rem; color: #f87171; margin-top: 0.2rem;">Reason: ${escapeHtml(rec.rejectionReason)}</div>` : ""}
+        ${rec.rejectionReason ? `<div style="font-size: 0.75rem; color: ${rec.status === "REVIEW" ? "#fbbf24" : "#f87171"}; margin-top: 0.2rem;">${rec.status === "REVIEW" ? "Review Note" : "Reason"}: ${escapeHtml(rec.rejectionReason)}</div>` : ""}
       </td>
       <td><code>${escapeHtml(rec.studentEmail || "")}</code></td>
       <td>${formattedTime}</td>

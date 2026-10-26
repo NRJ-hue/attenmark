@@ -280,6 +280,7 @@ fun AttendanceFlowScreen(
                                     val isGpsOutside = (gpsEval.status == GpsVerificationStatus.OUTSIDE_GEOFENCE)
                                     val isGpsSignalError = (gpsEval.status == GpsVerificationStatus.HARDWARE_OR_SIGNAL_ERROR)
                                     val isClassroomLocationMissing = (gpsEval.status == GpsVerificationStatus.MISSING_OR_INVALID_COORDINATES)
+                                    val isGpsUncertain = (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
 
                                     val finalStatus: AttendanceStatus
                                     val finalRejectionReason: String?
@@ -357,21 +358,26 @@ fun AttendanceFlowScreen(
                                             isRetryEligible = eligible
                                         }
 
-                                        trustScore > 75 -> {
-                                            finalStatus = AttendanceStatus.APPROVED
-                                            finalRejectionReason = if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
-                                                gpsEval.errorMessage else null
+                                        trustScore < 40 -> {
+                                            finalStatus = AttendanceStatus.REJECTED
+                                            finalRejectionReason = "Overall trust score insufficient ($trustScore/100). Minimum passing threshold is 40."
                                         }
 
-                                        trustScore >= 40 -> {
+                                        isGpsUncertain -> {
+                                            // Inconclusive GPS accuracy overrides any high score: must be routed to REVIEW, never auto-approved or rejected
                                             finalStatus = AttendanceStatus.REVIEW
-                                            finalRejectionReason = if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
-                                                gpsEval.errorMessage else null
+                                            finalRejectionReason = "GPS accuracy is inconclusive; awaiting faculty review."
+                                        }
+
+                                        trustScore > 75 -> {
+                                            finalStatus = AttendanceStatus.APPROVED
+                                            finalRejectionReason = null
                                         }
 
                                         else -> {
-                                            finalStatus = AttendanceStatus.REJECTED
-                                            finalRejectionReason = "Overall trust score insufficient ($trustScore/100). Minimum passing threshold is 40."
+                                            // trustScore is 40..75
+                                            finalStatus = AttendanceStatus.REVIEW
+                                            finalRejectionReason = null
                                         }
                                     }
 
@@ -399,7 +405,8 @@ fun AttendanceFlowScreen(
                                             status = finalStatus,
                                             overallScore = trustScore,
                                             selfieBase64 = selfieBase64,
-                                            rejectionReason = finalRejectionReason
+                                            rejectionReason = finalRejectionReason,
+                                            gpsVerificationStatus = gpsEval.status.name
                                         )
                                         withContext(Dispatchers.IO) {
                                             firestoreRepo.submitRecordViaBackend(record)
@@ -410,7 +417,7 @@ fun AttendanceFlowScreen(
                                     // Persist valid record to Firestore via authoritative backend
                                     val currentUid = if (userUid.isNotBlank()) userUid
                                         else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
-                                    val docId = "${sessionId}_${currentUid}"
+                                        val docId = "${sessionId}_${currentUid}"
                                     val selfieBase64 = selfieCapture?.let { com.attendmark.app.data.ImageValidationUtil.compressToBase64(it) } ?: ""
 
                                     val record = AttendanceRecord(
@@ -428,7 +435,8 @@ fun AttendanceFlowScreen(
                                         status = finalStatus,
                                         overallScore = trustScore,
                                         selfieBase64 = selfieBase64,
-                                        rejectionReason = finalRejectionReason
+                                        rejectionReason = finalRejectionReason,
+                                        gpsVerificationStatus = gpsEval.status.name
                                     )
 
                                     statusMessage = "Persisting attendance record..."

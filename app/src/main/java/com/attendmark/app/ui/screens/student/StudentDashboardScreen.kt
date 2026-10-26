@@ -723,8 +723,13 @@ fun AttendanceHistoryCard(record: AttendanceRecord) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text("Awaiting Instructor Approval", style = MaterialTheme.typography.labelMedium, color = StatusReview)
                                 Spacer(Modifier.height(2.dp))
+                                val reviewText = if (!record.rejectionReason.isNullOrBlank()) {
+                                    "${record.rejectionReason} (Trust score: ${record.overallScore}/100)"
+                                } else {
+                                    "Your verification scan succeeded with a trust score of ${record.overallScore}/100. Scores between 40 and 75 remain Under Review until confirmed and approved by your course instructor."
+                                }
                                 Text(
-                                    "Your verification scan succeeded with a trust score of ${record.overallScore}/100. Scores between 40 and 75 remain Under Review until confirmed and approved by your course instructor.",
+                                    reviewText,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextPrimary
                                 )

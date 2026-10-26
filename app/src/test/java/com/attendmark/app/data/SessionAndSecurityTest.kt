@@ -299,7 +299,8 @@ class SessionAndSecurityTest {
         overallScore: Int,
         livenessPassed: Boolean = true,
         matchResult: String = "MATCH",
-        gpsWithinBounds: Boolean = true
+        gpsWithinBounds: Boolean = true,
+        gpsStatus: GpsVerificationStatus = if (gpsWithinBounds) GpsVerificationStatus.PASSED else GpsVerificationStatus.OUTSIDE_GEOFENCE
     ): Pair<AttendanceStatus, String?> {
         if (!livenessPassed) {
             return Pair(AttendanceStatus.REJECTED, "Liveness verification failed.")
@@ -307,14 +308,19 @@ class SessionAndSecurityTest {
         if (matchResult == "NO_MATCH") {
             return Pair(AttendanceStatus.REJECTED, "Face recognition failed.")
         }
-        if (!gpsWithinBounds) {
+        if (gpsStatus == GpsVerificationStatus.OUTSIDE_GEOFENCE || !gpsWithinBounds) {
             return Pair(AttendanceStatus.REJECTED, "Location outside classroom bounds.")
+        }
+        if (overallScore < 40) {
+            return Pair(AttendanceStatus.REJECTED, "Overall trust score insufficient ($overallScore/100). Minimum passing threshold is 40.")
+        }
+        if (gpsStatus == GpsVerificationStatus.UNCERTAIN_ACCURACY) {
+            return Pair(AttendanceStatus.REVIEW, "GPS accuracy is inconclusive; awaiting faculty review.")
         }
 
         return when {
             overallScore > 75 -> Pair(AttendanceStatus.APPROVED, null)
-            overallScore >= 40 -> Pair(AttendanceStatus.REVIEW, null)
-            else -> Pair(AttendanceStatus.REJECTED, "Overall trust score insufficient ($overallScore/100). Minimum passing threshold is 40.")
+            else -> Pair(AttendanceStatus.REVIEW, null)
         }
     }
 
@@ -362,6 +368,51 @@ class SessionAndSecurityTest {
         val (statusGpsFail, reasonGps) = evaluateAttendancePolicy(overallScore = 98, gpsWithinBounds = false)
         assertEquals(AttendanceStatus.REJECTED, statusGpsFail)
         assertTrue(reasonGps?.contains("Location") == true)
+    }
+
+    @Test
+    fun trustScorePolicy_gpsUncertaintyRoutesToReview() {
+        // High score (77) with UNCERTAIN_ACCURACY must NOT be APPROVED or REJECTED; it must route to REVIEW
+        val (status77Uncertain, reason77) = evaluateAttendancePolicy(
+            overallScore = 77,
+            gpsStatus = GpsVerificationStatus.UNCERTAIN_ACCURACY
+        )
+        assertEquals(AttendanceStatus.REVIEW, status77Uncertain)
+        assertTrue(reason77?.contains("inconclusive") == true || reason77?.contains("uncertain") == true)
+
+        // Very high score (95) with UNCERTAIN_ACCURACY must also route to REVIEW, never auto-approved
+        val (status95Uncertain, _) = evaluateAttendancePolicy(
+            overallScore = 95,
+            gpsStatus = GpsVerificationStatus.UNCERTAIN_ACCURACY
+        )
+        assertEquals(AttendanceStatus.REVIEW, status95Uncertain)
+
+        // Low score (35) with UNCERTAIN_ACCURACY must remain REJECTED due to <40 minimum threshold
+        val (status35Uncertain, reason35) = evaluateAttendancePolicy(
+            overallScore = 35,
+            gpsStatus = GpsVerificationStatus.UNCERTAIN_ACCURACY
+        )
+        assertEquals(AttendanceStatus.REJECTED, status35Uncertain)
+        assertTrue(reason35?.contains("35/100") == true)
+    }
+
+    @Test
+    fun trustScorePolicy_gpsCalculation35mWith20mAccuracyOn50mGeofenceIsUncertain() {
+        // Concrete reported production scenario:
+        // Distance = 35m, Accuracy = ±20m, Geofence Radius = 50m
+        // d + a = 55m > 50m (not confidently inside)
+        // d - a = 15m <= 50m (not confidently outside)
+        // -> GpsVerificationStatus.UNCERTAIN_ACCURACY
+        val result = LocationService.evaluateProximity(
+            distanceMeters = 35f,
+            accuracyMeters = 20f,
+            geofenceRadiusMeters = 50f
+        )
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, result.status)
+        assertEquals(35f, result.distanceMeters, 0.01f)
+        assertEquals(20f, result.accuracyMeters, 0.01f)
+        assertTrue(result.errorMessage?.contains("uncertain") == true)
+        assertTrue(result.isEligibleForRetry)
     }
 
     @Test

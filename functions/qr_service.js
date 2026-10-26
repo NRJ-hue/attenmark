@@ -750,13 +750,19 @@ async function submitAttendanceRecordCore(db, authContext, data) {
     // - Liveness check must have passed
     // - Face match cannot be NO_MATCH
     // - Caller must not report an active failure reason indicating location/liveness violation
+    // - Inconclusive GPS accuracy routes to REVIEW (never REJECTED or auto-APPROVED)
     const livenessPassed = data.livenessPassed === true;
     const isFaceNoMatch = data.matchResult === "NO_MATCH";
-    const explicitRejection = Boolean(data.rejectionReason);
+    const rawReason = typeof data.rejectionReason === "string" ? data.rejectionReason.trim() : "";
+    const isGpsUncertain = (
+      data.gpsVerificationStatus === "UNCERTAIN_ACCURACY" ||
+      rawReason.toLowerCase().includes("uncertain") ||
+      rawReason.toLowerCase().includes("inconclusive")
+    );
 
     let status;
     let autoApproved = false;
-    let finalRejectionReason = data.rejectionReason || null;
+    let finalRejectionReason = null;
 
     if (!livenessPassed) {
       status = "REJECTED";
@@ -766,27 +772,29 @@ async function submitAttendanceRecordCore(db, authContext, data) {
       status = "REJECTED";
       autoApproved = false;
       finalRejectionReason = "Face recognition failed: biometric signature did not match enrolled student reference.";
-    } else if (explicitRejection && !finalRejectionReason.includes("UNCERTAIN_ACCURACY")) {
+    } else if (overallScore < 40) {
       status = "REJECTED";
       autoApproved = false;
+      finalRejectionReason = rawReason || `Overall trust score insufficient (${overallScore}/100). Minimum passing threshold is 40.`;
+    } else if (rawReason && !isGpsUncertain) {
+      // True explicit hard rejection (e.g. GPS outside geofence, hardware failure)
+      status = "REJECTED";
+      autoApproved = false;
+      finalRejectionReason = rawReason;
+    } else if (isGpsUncertain) {
+      // Inconclusive GPS accuracy overrides any high score: must be REVIEW, never auto-approved or rejected
+      status = "REVIEW";
+      autoApproved = false;
+      finalRejectionReason = rawReason || "GPS accuracy is inconclusive; awaiting faculty review.";
+    } else if (overallScore > 75) {
+      status = "APPROVED";
+      autoApproved = true;
+      finalRejectionReason = null;
     } else {
-      // Apply exact trust-score thresholds
-      // Score > 75: APPROVED
-      // Score < 40: REJECTED
-      // Score 40..75: REVIEW
-      if (overallScore > 75) {
-        status = "APPROVED";
-        autoApproved = true;
-        finalRejectionReason = null;
-      } else if (overallScore < 40) {
-        status = "REJECTED";
-        autoApproved = false;
-        finalRejectionReason = `Overall trust score insufficient (${overallScore}/100). Minimum passing threshold is 40.`;
-      } else {
-        status = "REVIEW";
-        autoApproved = false;
-        finalRejectionReason = null;
-      }
+      // Score 40..75 without uncertain GPS
+      status = "REVIEW";
+      autoApproved = false;
+      finalRejectionReason = null;
     }
 
     // 5. Construct and write the final attendance record
@@ -802,6 +810,7 @@ async function submitAttendanceRecordCore(db, authContext, data) {
       matchResult: data.matchResult || "UNKNOWN",
       livenessChallenge: data.livenessChallenge || "BLINK",
       livenessPassed,
+      gpsVerificationStatus: data.gpsVerificationStatus || (isGpsUncertain ? "UNCERTAIN_ACCURACY" : null),
       status,
       autoApproved,
       overallScore,
@@ -830,6 +839,7 @@ async function submitAttendanceRecordCore(db, authContext, data) {
       status,
       autoApproved,
       overallScore,
+      rejectionReason: finalRejectionReason,
       alreadySubmitted: false
     };
   });

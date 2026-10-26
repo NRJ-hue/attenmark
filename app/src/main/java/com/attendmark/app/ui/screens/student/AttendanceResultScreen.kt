@@ -237,8 +237,12 @@ fun AttendanceResultScreen(
                     Text(
                         when (currentRecord.status) {
                             AttendanceStatus.APPROVED -> "Your identity has been confirmed with high confidence. Attendance recorded successfully."
-                            AttendanceStatus.REVIEW -> "Low confidence match. Your attendance is pending faculty review. Show this receipt to your professor."
-                            AttendanceStatus.REJECTED -> "Face verification failed. Please contact your professor and show this attempt receipt."
+                            AttendanceStatus.REVIEW -> if (!currentRecord.rejectionReason.isNullOrBlank()) {
+                                currentRecord.rejectionReason
+                            } else {
+                                "Low confidence match. Your attendance is pending faculty review. Show this receipt to your professor."
+                            }
+                            AttendanceStatus.REJECTED -> currentRecord.rejectionReason ?: "Face verification failed. Please contact your professor and show this attempt receipt."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.85f)

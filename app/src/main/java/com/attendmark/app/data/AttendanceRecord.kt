@@ -23,7 +23,8 @@ data class AttendanceRecord(
     val overallScore: Int = 0,        // 0 to 100 Trust Score
     val selfieBase64: String = "",    // for faculty review (optional, cleared after review)
     val classroomPhotoBase64: String = "", // BeReal classroom photo
-    val rejectionReason: String? = null // Optional reason if faculty rejects
+    val rejectionReason: String? = null, // Optional reason if faculty rejects or awaiting review note
+    val gpsVerificationStatus: String? = null
 ) {
     fun formattedTime(): String {
         val sdf = SimpleDateFormat("dd MMM yyyy, hh:mm:ss a", Locale.getDefault())

@@ -249,6 +249,32 @@ class LocationServiceTest {
     }
 
     @Test
+    fun proximity_reportedProductionDistance35mWith20mAccuracyIsUncertain() {
+        // Concrete reported issue: distance = 35m, accuracy = ±20m, geofence = 50m
+        // d + a = 35 + 20 = 55m > 50m
+        // d - a = 35 - 20 = 15m <= 50m
+        // Must evaluate to UNCERTAIN_ACCURACY (not OUTSIDE_GEOFENCE or PASSED)
+        val studentLat = classroomLat + offsetForDistance(35.0)
+        val studentLon = classroomLon
+
+        val result = LocationService.evaluateProximity(
+            latitude = studentLat,
+            longitude = studentLon,
+            accuracyMeters = 20f,
+            classroomLat = classroomLat,
+            classroomLon = classroomLon,
+            geofenceRadiusMeters = 50f
+        )
+
+        assertEquals(GpsVerificationStatus.UNCERTAIN_ACCURACY, result.status)
+        assertTrue(result.isEligibleForRetry)
+        assertNotNull(result.errorMessage)
+        assertTrue(result.errorMessage?.contains("uncertain") == true)
+        assertEquals(35f, result.distanceMeters, 0.5f)
+        assertEquals(20f, result.accuracyMeters, 0.01f)
+    }
+
+    @Test
     fun proximity_exactOuterBoundaryIsUncertain() {
         // Exact outer boundary: d = 65m, a = 15m, r = 50m -> d - a = 50m.
         // Since (d - a > r) is false (50 > 50 is false), uncertainty circle touches boundary -> UNCERTAIN_ACCURACY

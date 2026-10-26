@@ -340,7 +340,8 @@ class FirestoreRepository {
                     "classroomPhotoBase64" to record.classroomPhotoBase64,
                     "studentName" to record.studentName,
                     "studentEmail" to record.studentEmail,
-                    "rejectionReason" to record.rejectionReason
+                    "rejectionReason" to record.rejectionReason,
+                    "gpsVerificationStatus" to record.gpsVerificationStatus
                 )
 
                 val backendResult = BackendApiClient.post("submitAttendanceRecord", payload)
@@ -398,6 +399,7 @@ class FirestoreRepository {
                     "overallScore" to record.overallScore,
                     "timestamp" to record.timestamp,
                     "rejectionReason" to record.rejectionReason,
+                    "gpsVerificationStatus" to record.gpsVerificationStatus,
                     "selfieBase64" to record.selfieBase64,
                     "classroomPhotoBase64" to record.classroomPhotoBase64
                 )
@@ -437,6 +439,7 @@ class FirestoreRepository {
             "overallScore" to record.overallScore,
             "timestamp" to record.timestamp,
             "rejectionReason" to record.rejectionReason,
+            "gpsVerificationStatus" to record.gpsVerificationStatus,
             "selfieBase64" to record.selfieBase64,
             "classroomPhotoBase64" to record.classroomPhotoBase64
         )
@@ -531,6 +534,7 @@ class FirestoreRepository {
                     overallScore = doc.getLong("overallScore")?.toInt() ?: 0,
                     timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
                     rejectionReason = doc.getString("rejectionReason"),
+                    gpsVerificationStatus = doc.getString("gpsVerificationStatus"),
                     selfieBase64 = doc.getString("selfieBase64") ?: "",
                     classroomPhotoBase64 = doc.getString("classroomPhotoBase64") ?: ""
                 )
@@ -580,6 +584,7 @@ class FirestoreRepository {
                 overallScore = doc.getLong("overallScore")?.toInt() ?: 0,
                 timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
                 rejectionReason = doc.getString("rejectionReason"),
+                gpsVerificationStatus = doc.getString("gpsVerificationStatus"),
                 selfieBase64 = doc.getString("selfieBase64") ?: "",
                 classroomPhotoBase64 = doc.getString("classroomPhotoBase64") ?: ""
             )
