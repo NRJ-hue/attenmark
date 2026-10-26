@@ -64,12 +64,12 @@ fun StudentDashboardScreen(
         isPrefetchingSession = false
     }
 
-    LaunchedEffect(userEmail, courseCode) {
+    LaunchedEffect(userEmail, userUid, courseCode) {
         if (userEmail.isNotBlank()) {
-            firestoreRepo.getRecordsFlow(courseCode).collect { records ->
+            val effectiveUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: userUid
+            firestoreRepo.getStudentRecordsFlow(courseCode, effectiveUid).collect { records ->
                 attendanceRecords.clear()
-                attendanceRecords.addAll(records.filter { it.studentEmail == userEmail })
-
+                attendanceRecords.addAll(records)
             }
         }
     }

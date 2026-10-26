@@ -385,57 +385,132 @@ class FirestoreRepository {
             }
     }
 
-    /**
-     * Listen to attendance records in real-time, filtered by courseCode
-     */
-    fun getRecordsFlow(courseCode: String = ""): Flow<List<AttendanceRecord>> = callbackFlow {
-        val query = if (courseCode.isNotBlank()) {
-            recordsCollection
-                .whereEqualTo("courseCode", courseCode)
-                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
-        } else {
-            recordsCollection
-                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+    private fun parseAttendanceRecord(doc: com.google.firebase.firestore.DocumentSnapshot): AttendanceRecord? {
+        return try {
+            val rawStatus = doc.getString("status") ?: "REVIEW"
+            val status = try {
+                AttendanceStatus.valueOf(rawStatus)
+            } catch (ex: Exception) {
+                AttendanceStatus.REVIEW
+            }
+
+            AttendanceRecord(
+                id = doc.id,
+                sessionId = doc.getString("sessionId") ?: "",
+                studentUid = doc.getString("studentUid") ?: "",
+                studentName = doc.getString("studentName") ?: "",
+                studentEmail = doc.getString("studentEmail") ?: "",
+                courseCode = doc.getString("courseCode") ?: "",
+                faceMatchScore = doc.getDouble("faceMatchScore")?.toFloat() ?: 0f,
+                matchPercentage = doc.getLong("matchPercentage")?.toInt() ?: 0,
+                matchResult = doc.getString("matchResult") ?: "",
+                livenessChallenge = doc.getString("livenessChallenge") ?: "",
+                livenessPassed = doc.getBoolean("livenessPassed") ?: false,
+                status = status,
+                overallScore = doc.getLong("overallScore")?.toInt() ?: 0,
+                timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
+                rejectionReason = doc.getString("rejectionReason"),
+                selfieBase64 = doc.getString("selfieBase64") ?: "",
+                classroomPhotoBase64 = doc.getString("classroomPhotoBase64") ?: ""
+            )
+        } catch (ex: Exception) {
+            Log.e("FirestoreRepository", "Error parsing record", ex)
+            null
         }
+    }
+
+    /**
+     * Listen to a student's own attendance records in real-time,
+     * constrained by courseCode and the authenticated student's UID.
+     * Preserves timestamp descending ordering.
+     */
+    fun getStudentRecordsFlow(courseCode: String, studentUid: String? = null): Flow<List<AttendanceRecord>> = callbackFlow {
+        val effectiveUid = studentUid?.takeIf { it.isNotBlank() }
+            ?: com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+
+        if (effectiveUid.isNullOrBlank()) {
+            Log.w("FirestoreRepository", "Cannot query student attendance records: User is not authenticated.")
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val trimmedCourse = courseCode.trim().uppercase()
+        if (trimmedCourse.isBlank()) {
+            Log.w("FirestoreRepository", "Cannot query student attendance records: Course code is blank.")
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val query = recordsCollection
+            .whereEqualTo("courseCode", trimmedCourse)
+            .whereEqualTo("studentUid", effectiveUid)
+            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+
         val listenerRegistration = query.addSnapshotListener { snapshot, e ->
             if (e != null) {
-                Log.w("FirestoreRepository", "Listen failed.", e)
+                Log.w("FirestoreRepository", "Student records listen failed.", e)
                 return@addSnapshotListener
             }
 
             if (snapshot != null) {
                 val records = snapshot.documents.mapNotNull { doc ->
-                    try {
-                        val rawStatus = doc.getString("status") ?: "REVIEW"
-                        val status = try {
-                            AttendanceStatus.valueOf(rawStatus)
-                        } catch (ex: Exception) {
-                            AttendanceStatus.REVIEW
-                        }
+                    parseAttendanceRecord(doc)
+                }
+                trySend(records)
+            }
+        }
 
-                        AttendanceRecord(
-                            id = doc.id,
-                            sessionId = doc.getString("sessionId") ?: "",
-                            studentUid = doc.getString("studentUid") ?: "",
-                            studentName = doc.getString("studentName") ?: "",
-                            studentEmail = doc.getString("studentEmail") ?: "",
-                            courseCode = doc.getString("courseCode") ?: "",
-                            faceMatchScore = doc.getDouble("faceMatchScore")?.toFloat() ?: 0f,
-                            matchPercentage = doc.getLong("matchPercentage")?.toInt() ?: 0,
-                            matchResult = doc.getString("matchResult") ?: "",
-                            livenessChallenge = doc.getString("livenessChallenge") ?: "",
-                            livenessPassed = doc.getBoolean("livenessPassed") ?: false,
-                            status = status,
-                            overallScore = doc.getLong("overallScore")?.toInt() ?: 0,
-                            timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis(),
-                            rejectionReason = doc.getString("rejectionReason"),
-                            selfieBase64 = doc.getString("selfieBase64") ?: "",
-                            classroomPhotoBase64 = doc.getString("classroomPhotoBase64") ?: ""
-                        )
-                    } catch (ex: Exception) {
-                        Log.e("FirestoreRepository", "Error parsing record", ex)
-                        null
-                    }
+        awaitClose {
+            listenerRegistration.remove()
+        }
+    }
+
+    /**
+     * Listen to attendance records in real-time.
+     * - If studentUid is provided: constrains by both courseCode and studentUid.
+     * - If studentUid is null (faculty caller): constrains by courseCode.
+     * - In all cases, requires authenticated caller and valid courseCode to prevent unrestricted collection scans.
+     */
+    fun getRecordsFlow(courseCode: String = "", studentUid: String? = null): Flow<List<AttendanceRecord>> = callbackFlow {
+        val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+        if (currentUser == null) {
+            Log.w("FirestoreRepository", "Cannot query attendance records: User is not authenticated.")
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val trimmedCourse = courseCode.trim().uppercase()
+        if (trimmedCourse.isBlank()) {
+            Log.w("FirestoreRepository", "Cannot query attendance records: Course code must be specified.")
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+
+        val query = if (!studentUid.isNullOrBlank()) {
+            recordsCollection
+                .whereEqualTo("courseCode", trimmedCourse)
+                .whereEqualTo("studentUid", studentUid)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+        } else {
+            // Faculty query across all records for this course
+            recordsCollection
+                .whereEqualTo("courseCode", trimmedCourse)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+        }
+
+        val listenerRegistration = query.addSnapshotListener { snapshot, e ->
+            if (e != null) {
+                Log.w("FirestoreRepository", "Records listen failed.", e)
+                return@addSnapshotListener
+            }
+
+            if (snapshot != null) {
+                val records = snapshot.documents.mapNotNull { doc ->
+                    parseAttendanceRecord(doc)
                 }
                 trySend(records)
             }

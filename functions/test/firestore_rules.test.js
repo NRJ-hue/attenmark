@@ -6,7 +6,18 @@ const {
   assertFails,
   assertSucceeds
 } = require("@firebase/rules-unit-testing");
-const { doc, getDoc, setDoc, updateDoc, writeBatch } = require("firebase/firestore");
+const {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch
+} = require("firebase/firestore");
 
 describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", function () {
   this.timeout(15000);
@@ -429,6 +440,75 @@ describe("Phase 3: Firestore Security Rules (Live Emulator Enforcement)", functi
           timestamp: Date.now()
         })
       );
+    });
+
+    it("ALLOWS authenticated student to query strictly their own attendance records using UID and courseCode", async function () {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const adminDb = context.firestore();
+        await setDoc(doc(adminDb, `attendance_records/${sessionId}_student-uid-1`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-1",
+          studentEmail: "student1@test.com",
+          status: "REVIEW",
+          timestamp: 1000
+        });
+        await setDoc(doc(adminDb, `attendance_records/${sessionId}_student-uid-2`), {
+          sessionId: sessionId,
+          courseCode: "CS101",
+          studentUid: "student-uid-2",
+          studentEmail: "student2@test.com",
+          status: "REVIEW",
+          timestamp: 2000
+        });
+      });
+
+      const student1Ctx = testEnv.authenticatedContext("student-uid-1", { email: "student1@test.com" });
+      const student1Db = student1Ctx.firestore();
+
+      const q = query(
+        collection(student1Db, "attendance_records"),
+        where("courseCode", "==", "CS101"),
+        where("studentUid", "==", "student-uid-1"),
+        orderBy("timestamp", "desc")
+      );
+
+      const snap = await assertSucceeds(getDocs(q));
+      assert.strictEqual(snap.docs.length, 1);
+      assert.strictEqual(snap.docs[0].data().studentUid, "student-uid-1");
+    });
+
+    it("DENIES student query for another student's records or an unconstrained course query", async function () {
+      const student1Ctx = testEnv.authenticatedContext("student-uid-1", { email: "student1@test.com" });
+      const student1Db = student1Ctx.firestore();
+
+      // Querying with another student's UID
+      const qOther = query(
+        collection(student1Db, "attendance_records"),
+        where("courseCode", "==", "CS101"),
+        where("studentUid", "==", "student-uid-2"),
+        orderBy("timestamp", "desc")
+      );
+      await assertFails(getDocs(qOther));
+
+      // Querying without studentUid constraint (broad course scan by student)
+      const qBroad = query(
+        collection(student1Db, "attendance_records"),
+        where("courseCode", "==", "CS101"),
+        orderBy("timestamp", "desc")
+      );
+      await assertFails(getDocs(qBroad));
+    });
+
+    it("DENIES unauthenticated caller from querying attendance records", async function () {
+      const unauthDb = testEnv.unauthenticatedContext().firestore();
+      const q = query(
+        collection(unauthDb, "attendance_records"),
+        where("courseCode", "==", "CS101"),
+        where("studentUid", "==", "student-uid-1"),
+        orderBy("timestamp", "desc")
+      );
+      await assertFails(getDocs(q));
     });
 
     it("DENIES unauthorized Faculty B from approving or rejecting Faculty A's record", async function () {

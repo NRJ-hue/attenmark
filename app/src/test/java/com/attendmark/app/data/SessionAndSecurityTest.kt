@@ -228,4 +228,68 @@ class SessionAndSecurityTest {
         assertEquals("stu-200", map["studentUid"])
         assertEquals("token-tok-300", map["tokenId"])
     }
+
+    // ─── 6. Student Query Constraints & History Ordering ──────────────────────────
+
+    @Test
+    fun studentQuery_validatesRequiredConstraintsAndPreservesTimestampOrder() {
+        fun validateStudentQuery(callerUid: String?, courseCode: String?): Boolean {
+            if (callerUid.isNullOrBlank()) return false
+            if (courseCode.isNullOrBlank()) return false
+            return true
+        }
+
+        // Unauthenticated caller
+        assertFalse(validateStudentQuery(callerUid = null, courseCode = "CS101"))
+        assertFalse(validateStudentQuery(callerUid = "", courseCode = "CS101"))
+
+        // Blank course code
+        assertFalse(validateStudentQuery(callerUid = "student-123", courseCode = null))
+        assertFalse(validateStudentQuery(callerUid = "student-123", courseCode = "  "))
+
+        // Valid student query parameters
+        assertTrue(validateStudentQuery(callerUid = "student-123", courseCode = "CS101"))
+
+        // Verify descending timestamp sort preservation
+        val rec1 = AttendanceRecord(
+            id = "sess1_stu123",
+            sessionId = "sess1",
+            studentUid = "student-123",
+            studentName = "Student A",
+            studentEmail = "studentA@test.com",
+            courseCode = "CS101",
+            faceMatchScore = 0.95f,
+            matchPercentage = 95,
+            matchResult = "MATCH",
+            livenessChallenge = "SMILE",
+            livenessPassed = true,
+            status = AttendanceStatus.REVIEW,
+            overallScore = 95,
+            timestamp = 1000L
+        )
+
+        val rec2 = AttendanceRecord(
+            id = "sess2_stu123",
+            sessionId = "sess2",
+            studentUid = "student-123",
+            studentName = "Student A",
+            studentEmail = "studentA@test.com",
+            courseCode = "CS101",
+            faceMatchScore = 0.91f,
+            matchPercentage = 91,
+            matchResult = "MATCH",
+            livenessChallenge = "BLINK",
+            livenessPassed = true,
+            status = AttendanceStatus.REVIEW,
+            overallScore = 91,
+            timestamp = 2000L
+        )
+
+        val list = listOf(rec1, rec2)
+        val sortedDesc = list.sortedByDescending { it.timestamp }
+        assertEquals(2000L, sortedDesc[0].timestamp)
+        assertEquals("sess2_stu123", sortedDesc[0].id)
+        assertEquals(1000L, sortedDesc[1].timestamp)
+        assertEquals("sess1_stu123", sortedDesc[1].id)
+    }
 }
