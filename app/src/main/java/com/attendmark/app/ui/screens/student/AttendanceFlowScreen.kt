@@ -357,7 +357,13 @@ fun AttendanceFlowScreen(
                                             isRetryEligible = eligible
                                         }
 
-                                        trustScore >= 50 -> {
+                                        trustScore > 75 -> {
+                                            finalStatus = AttendanceStatus.APPROVED
+                                            finalRejectionReason = if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
+                                                gpsEval.errorMessage else null
+                                        }
+
+                                        trustScore >= 40 -> {
                                             finalStatus = AttendanceStatus.REVIEW
                                             finalRejectionReason = if (gpsEval.status == GpsVerificationStatus.UNCERTAIN_ACCURACY)
                                                 gpsEval.errorMessage else null
@@ -365,7 +371,7 @@ fun AttendanceFlowScreen(
 
                                         else -> {
                                             finalStatus = AttendanceStatus.REJECTED
-                                            finalRejectionReason = "Overall trust score insufficient ($trustScore/100)."
+                                            finalRejectionReason = "Overall trust score insufficient ($trustScore/100). Minimum passing threshold is 40."
                                         }
                                     }
 
@@ -396,12 +402,12 @@ fun AttendanceFlowScreen(
                                             rejectionReason = finalRejectionReason
                                         )
                                         withContext(Dispatchers.IO) {
-                                            firestoreRepo.submitRecord(record, {}, {})
+                                            firestoreRepo.submitRecordViaBackend(record)
                                         }
                                         return@launch
                                     }
 
-                                    // Persist valid record to Firestore
+                                    // Persist valid record to Firestore via authoritative backend
                                     val currentUid = if (userUid.isNotBlank()) userUid
                                         else (com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "")
                                     val docId = "${sessionId}_${currentUid}"
@@ -426,14 +432,13 @@ fun AttendanceFlowScreen(
                                     )
 
                                     statusMessage = "Persisting attendance record..."
-                                    firestoreRepo.submitRecord(
-                                        record = record,
-                                        onSuccess = { onResult(record.id) },
-                                        onFailure = { err ->
-                                            Log.e("AttendanceFlowScreen", "Error submitting attendance record", err)
-                                            onResult("error")
-                                        }
-                                    )
+                                    val submitRes = firestoreRepo.submitRecordViaBackend(record)
+                                    if (submitRes.isSuccess) {
+                                        onResult(record.id)
+                                    } else {
+                                        Log.e("AttendanceFlowScreen", "Error submitting attendance record via backend", submitRes.exceptionOrNull())
+                                        onResult("error")
+                                    }
                                 }
                             }
                         )

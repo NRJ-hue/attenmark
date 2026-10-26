@@ -556,42 +556,78 @@ fun AttendanceHistoryCard(record: AttendanceRecord) {
         onClick = { expanded = !expanded }
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            // Row 1: Course code + Status Dot on the left, Trust Score on the right
             Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Status dot
-                Box(modifier = Modifier.size(10.dp).background(statusColor, CircleShape))
-                Spacer(Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(record.courseCode, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    Text(record.formattedTime(), style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        Text("Liveness: ${record.livenessChallenge.replace("_", " ")}", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                    }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(statusColor, CircleShape)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = record.courseCode,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
                 }
 
-                Column(horizontalAlignment = Alignment.End) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        "${record.overallScore}/100",
+                        text = "${record.overallScore}/100",
                         style = MaterialTheme.typography.titleMedium,
                         color = statusColor
                     )
-                    Text("Trust Score", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                    Spacer(Modifier.height(4.dp))
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = statusColor.copy(alpha = 0.12f)
-                    ) {
-                        Text(
-                            record.status.label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = statusColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "Trust Score",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
                 }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Row 2: Status badge pill - full card width available so long labels wrap gracefully without squeezing columns
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = statusColor.copy(alpha = 0.12f)
+            ) {
+                Text(
+                    text = record.status.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = statusColor,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Row 3: Timestamp on the left, Liveness challenge on the right
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = record.formattedTime(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+                Text(
+                    text = "Liveness: ${record.livenessChallenge.replace("_", " ")}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
             }
 
             if (expanded) {
@@ -618,35 +654,59 @@ fun AttendanceHistoryCard(record: AttendanceRecord) {
                     Text(if (backCameraValid) "+20" else "+0", style = MaterialTheme.typography.bodySmall, color = if (backCameraValid) StatusApproved else StatusRejected)
                 }
                 
-                if (record.status == AttendanceStatus.REVIEW) {
-                    Spacer(Modifier.height(10.dp))
-                    Surface(
-                        color = StatusReview.copy(alpha = 0.1f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("Awaiting Instructor Approval", style = MaterialTheme.typography.labelMedium, color = StatusReview)
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                "Your verification scan succeeded with a trust score of ${record.overallScore}/100. In accordance with university policy, all attendance submissions remain Under Review until confirmed and approved by your course instructor.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextPrimary
-                            )
+                when (record.status) {
+                    AttendanceStatus.APPROVED -> {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = StatusApproved.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("Attendance Approved", style = MaterialTheme.typography.labelMedium, color = StatusApproved)
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "Your verification scan achieved a trust score of ${record.overallScore}/100, which satisfies the auto-approval threshold (>75) and all mandatory verification gates.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextPrimary
+                                )
+                            }
                         }
                     }
-                }
-
-                if (record.rejectionReason != null) {
-                    Spacer(Modifier.height(12.dp))
-                    Surface(
-                        color = StatusRejected.copy(alpha = 0.1f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text("Rejection Reason", style = MaterialTheme.typography.labelMedium, color = StatusRejected)
-                            Text(record.rejectionReason, style = MaterialTheme.typography.bodySmall, color = StatusRejected)
+                    AttendanceStatus.REVIEW -> {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = StatusReview.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("Awaiting Instructor Approval", style = MaterialTheme.typography.labelMedium, color = StatusReview)
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "Your verification scan succeeded with a trust score of ${record.overallScore}/100. Scores between 40 and 75 remain Under Review until confirmed and approved by your course instructor.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextPrimary
+                                )
+                            }
+                        }
+                    }
+                    AttendanceStatus.REJECTED -> {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = StatusRejected.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("Submission Rejected", style = MaterialTheme.typography.labelMedium, color = StatusRejected)
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    record.rejectionReason ?: "Your attendance submission did not meet the minimum verification threshold (<40) or failed a required verification gate.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StatusRejected
+                                )
+                            }
                         }
                     }
                 }

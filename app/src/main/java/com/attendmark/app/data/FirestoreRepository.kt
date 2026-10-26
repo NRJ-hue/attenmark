@@ -252,6 +252,100 @@ class FirestoreRepository {
     }
 
     /**
+     * Submit an attendance record through the authoritative backend endpoint.
+     * The backend validates the student's active QR claim, enforces trust-score thresholds
+     * (>75 Approved, 40..75 Review, <40 Rejected), writes via Admin SDK, and marks the claim submitted.
+     *
+     * In the event of network/backend failure, falls back to direct client write with safe status
+     * (downgrading APPROVED to REVIEW to satisfy firestore.rules).
+     */
+    suspend fun submitRecordViaBackend(record: AttendanceRecord): Result<AttendanceRecord> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                val payload = mapOf(
+                    "sessionId" to record.sessionId,
+                    "courseCode" to record.courseCode,
+                    "overallScore" to record.overallScore,
+                    "matchPercentage" to record.matchPercentage,
+                    "matchResult" to record.matchResult,
+                    "livenessChallenge" to record.livenessChallenge,
+                    "livenessPassed" to record.livenessPassed,
+                    "faceMatchScore" to record.faceMatchScore,
+                    "selfieBase64" to record.selfieBase64,
+                    "classroomPhotoBase64" to record.classroomPhotoBase64,
+                    "studentName" to record.studentName,
+                    "studentEmail" to record.studentEmail,
+                    "rejectionReason" to record.rejectionReason
+                )
+
+                val backendResult = BackendApiClient.post("submitAttendanceRecord", payload)
+                if (backendResult.isSuccess) {
+                    val data = backendResult.getOrNull()
+                    val serverStatusStr = (data?.get("status") as? String) ?: record.status.name
+                    val serverStatus = try {
+                        AttendanceStatus.valueOf(serverStatusStr)
+                    } catch (e: Exception) {
+                        record.status
+                    }
+                    val serverRejectionReason = (data?.get("rejectionReason") as? String) ?: record.rejectionReason
+                    Result.success(record.copy(status = serverStatus, rejectionReason = serverRejectionReason))
+                } else {
+                    Log.w("FirestoreRepository", "Backend submit failed, falling back to client write: ${backendResult.exceptionOrNull()?.message}")
+                    // Direct client writes cannot be APPROVED (firestore.rules blocks request.resource.data.status == 'APPROVED')
+                    // So client write falls back to REVIEW
+                    val clientSafeStatus = if (record.status == AttendanceStatus.APPROVED) AttendanceStatus.REVIEW else record.status
+                    val clientSafeRecord = record.copy(status = clientSafeStatus)
+                    val directResult = submitRecordDirect(clientSafeRecord)
+                    if (directResult.isSuccess) {
+                        Result.success(clientSafeRecord)
+                    } else {
+                        Result.failure(backendResult.exceptionOrNull() ?: Exception("Failed to persist attendance record."))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("FirestoreRepository", "submitRecordViaBackend exception", e)
+                Result.failure(e)
+            }
+        }
+
+    private suspend fun submitRecordDirect(record: AttendanceRecord): Result<Unit> =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            try {
+                val docId = if (record.sessionId.isNotBlank() && record.studentUid.isNotBlank()) {
+                    "${record.sessionId}_${record.studentUid}"
+                } else {
+                    record.id
+                }
+
+                val recordMap = hashMapOf(
+                    "id" to docId,
+                    "sessionId" to record.sessionId,
+                    "studentUid" to record.studentUid,
+                    "studentName" to record.studentName,
+                    "studentEmail" to record.studentEmail,
+                    "courseCode" to record.courseCode,
+                    "faceMatchScore" to record.faceMatchScore,
+                    "matchPercentage" to record.matchPercentage,
+                    "matchResult" to record.matchResult,
+                    "livenessChallenge" to record.livenessChallenge,
+                    "livenessPassed" to record.livenessPassed,
+                    "status" to record.status.name,
+                    "overallScore" to record.overallScore,
+                    "timestamp" to record.timestamp,
+                    "rejectionReason" to record.rejectionReason,
+                    "selfieBase64" to record.selfieBase64,
+                    "classroomPhotoBase64" to record.classroomPhotoBase64
+                )
+
+                recordsCollection.document(docId).set(recordMap).await()
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e("FirestoreRepository", "submitRecordDirect failed", e)
+                Result.failure(e)
+            }
+        }
+
+    /**
      * Submit an attendance record to Firestore.
      * Uses atomic document ID `${sessionId}_${studentUid}` when available to prevent duplicate submissions.
      */

@@ -13,7 +13,8 @@ const {
   stopAttendanceSessionCore,
   generateQrTokenCore,
   validateQrTokenCore,
-  recordVerificationFailureCore
+  recordVerificationFailureCore,
+  submitAttendanceRecordCore
 } = require("./qr_service");
 const { bootstrapProfileCore } = require("./profile_service");
 const {
@@ -141,6 +142,23 @@ exports.recordVerificationFailure = functions.https.onCall(async (request, respo
       throw new functions.https.HttpsError(err.code, err.message);
     }
     console.error("Unexpected error in recordVerificationFailure:", err);
+    throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
+  }
+});
+
+/**
+ * Cloud Function: submitAttendanceRecord
+ * Callable by authenticated student to submit attendance and enforce trust-score policy.
+ */
+exports.submitAttendanceRecord = functions.https.onCall(async (request, response) => {
+  try {
+    const { data, authContext } = extractCallableParams(request, response);
+    return await submitAttendanceRecordCore(db, authContext, data);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw new functions.https.HttpsError(err.code, err.message);
+    }
+    console.error("Unexpected error in submitAttendanceRecord:", err);
     throw new functions.https.HttpsError("internal", err.message || "An unexpected error occurred.");
   }
 });

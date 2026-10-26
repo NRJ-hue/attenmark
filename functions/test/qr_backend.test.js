@@ -7,7 +7,8 @@ const {
   stopAttendanceSessionCore,
   generateQrTokenCore,
   validateQrTokenCore,
-  recordVerificationFailureCore
+  recordVerificationFailureCore,
+  submitAttendanceRecordCore
 } = require("../qr_service");
 const {
   extractCallableParams,
@@ -15,7 +16,8 @@ const {
   stopAttendanceSession,
   generateQrToken,
   validateQrToken,
-  recordVerificationFailure
+  recordVerificationFailure,
+  submitAttendanceRecord
 } = require("../index");
 
 // Configure admin to point to the local Firestore emulator

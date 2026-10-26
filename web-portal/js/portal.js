@@ -82,6 +82,7 @@ const facultyDisplayEmail = document.getElementById("faculty-display-email");
 const btnLogout = document.getElementById("btn-logout");
 
 const coursesGrid = document.getElementById("courses-grid");
+const coursesAlert = document.getElementById("courses-alert");
 const tabCoursesActive = document.getElementById("tab-courses-active");
 const tabCoursesArchived = document.getElementById("tab-courses-archived");
 const countCoursesActive = document.getElementById("count-courses-active");
@@ -518,17 +519,17 @@ function renderCoursesGrid() {
           <span>👨‍🏫 ${escapeHtml(course.facultyEmail)}</span>
         </div>
       </div>
-      <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+      <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1.25rem;">
         ${!isArchived ? `
-          <button class="btn btn-primary btn-sm btn-manage-session" style="flex: 1;">
+          <button class="btn btn-primary btn-sm btn-manage-session" style="width: 100%;">
             Manage Attendance Session →
           </button>
-          <button class="btn btn-outline btn-sm btn-archive-course" title="Archive Course" style="color: #f87171; border-color: rgba(248,113,113,0.3);">
-            Archive
+          <button class="btn btn-outline btn-sm btn-archive-course" title="Archive / Cancel Course" style="width: 100%; color: #f87171; border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.06); font-weight: 600;">
+            📁 Cancel / Archive Course
           </button>
         ` : `
-          <button class="btn btn-outline btn-sm btn-unarchive-course" style="flex: 1; color: #38bdf8; border-color: rgba(56,189,248,0.3);">
-            ↺ Unarchive Course
+          <button class="btn btn-outline btn-sm btn-unarchive-course" title="Restore Course" style="width: 100%; color: #38bdf8; border-color: rgba(56,189,248,0.4); background: rgba(56,189,248,0.06); font-weight: 600;">
+            ↺ Restore / Unarchive Course
           </button>
         `}
       </div>
@@ -544,19 +545,41 @@ function renderCoursesGrid() {
     const btnArchive = card.querySelector(".btn-archive-course");
     if (btnArchive) {
       btnArchive.addEventListener("click", async () => {
-        if (!confirm(`Are you sure you want to archive course "${course.name}" (${course.classCode})?\n\nAny active attendance session will be stopped immediately. Historical records are preserved.`)) {
+        const confirmMsg =
+          `Cancel / Archive Course "${course.name}" (${course.classCode})?\n\n` +
+          `• Any currently active attendance session will be stopped immediately.\n` +
+          `• New attendance sessions cannot be started while the course is archived.\n` +
+          `• All historical attendance records and session history are fully preserved.\n` +
+          `• You can restore this course anytime from the Archived Courses tab.\n\n` +
+          `Proceed with archiving?`;
+
+        if (!confirm(confirmMsg)) {
           return;
         }
+
         btnArchive.disabled = true;
         btnArchive.textContent = "Archiving...";
+        if (coursesAlert) hideAlert(coursesAlert);
+
         try {
           await callBackendApi("archiveCourse", { courseCode: course.classCode });
+          if (coursesAlert) {
+            showAlert(
+              coursesAlert,
+              `Course "${course.name}" (${course.classCode}) was archived successfully. Any active session has been stopped, and historical records are preserved.`,
+              "success"
+            );
+          }
         } catch (err) {
           console.error("Archive course failed:", err);
-          alert("Could not archive course: " + (err.message || "Failed to archive."));
+          if (coursesAlert) {
+            showAlert(coursesAlert, "Could not archive course: " + (err.message || "Failed to archive course."), "error");
+          } else {
+            alert("Could not archive course: " + (err.message || "Failed to archive."));
+          }
         } finally {
           btnArchive.disabled = false;
-          btnArchive.textContent = "Archive";
+          btnArchive.textContent = "📁 Cancel / Archive Course";
         }
       });
     }
@@ -564,19 +587,39 @@ function renderCoursesGrid() {
     const btnUnarchive = card.querySelector(".btn-unarchive-course");
     if (btnUnarchive) {
       btnUnarchive.addEventListener("click", async () => {
-        if (!confirm(`Unarchive course "${course.name}" (${course.classCode})?`)) {
+        const confirmMsg =
+          `Restore Course "${course.name}" (${course.classCode})?\n\n` +
+          `• The course will become active again and available for attendance sessions.\n` +
+          `• Enrolled students will see the course in their active list.\n\n` +
+          `Proceed with restoring this course?`;
+
+        if (!confirm(confirmMsg)) {
           return;
         }
+
         btnUnarchive.disabled = true;
         btnUnarchive.textContent = "Restoring...";
+        if (coursesAlert) hideAlert(coursesAlert);
+
         try {
           await callBackendApi("unarchiveCourse", { courseCode: course.classCode });
+          if (coursesAlert) {
+            showAlert(
+              coursesAlert,
+              `Course "${course.name}" (${course.classCode}) was successfully restored to active courses.`,
+              "success"
+            );
+          }
         } catch (err) {
           console.error("Unarchive course failed:", err);
-          alert("Could not unarchive course: " + (err.message || "Failed to unarchive."));
+          if (coursesAlert) {
+            showAlert(coursesAlert, "Could not unarchive course: " + (err.message || "Failed to unarchive course."), "error");
+          } else {
+            alert("Could not unarchive course: " + (err.message || "Failed to unarchive."));
+          }
         } finally {
           btnUnarchive.disabled = false;
-          btnUnarchive.textContent = "↺ Unarchive Course";
+          btnUnarchive.textContent = "↺ Restore / Unarchive Course";
         }
       });
     }
@@ -591,6 +634,7 @@ if (tabCoursesActive) {
     courseFilter = "active";
     tabCoursesActive.classList.add("active");
     if (tabCoursesArchived) tabCoursesArchived.classList.remove("active");
+    if (coursesAlert) hideAlert(coursesAlert);
     renderCoursesGrid();
   });
 }
@@ -600,6 +644,7 @@ if (tabCoursesArchived) {
     courseFilter = "archived";
     tabCoursesArchived.classList.add("active");
     if (tabCoursesActive) tabCoursesActive.classList.remove("active");
+    if (coursesAlert) hideAlert(coursesAlert);
     renderCoursesGrid();
   });
 }
@@ -1197,8 +1242,32 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
     const formattedTime = rec.timestamp ? new Date(rec.timestamp).toLocaleTimeString() : "Just now";
 
     let badgeClass = "badge-review";
-    if (rec.status === "APPROVED") badgeClass = "badge-approved";
-    if (rec.status === "REJECTED") badgeClass = "badge-rejected";
+    let badgeLabel = escapeHtml(rec.status);
+    let badgeTitle = "";
+
+    if (rec.status === "APPROVED") {
+      badgeClass = "badge-approved";
+      if (rec.autoApproved === true || (!isManual && rec.overallScore > 75)) {
+        badgeLabel = "⚡ Auto-Approved";
+        badgeTitle = `Verified QR scan with trust score of ${rec.overallScore || 0}% (> 75)`;
+      } else {
+        badgeLabel = "✓ Faculty Approved";
+        badgeTitle = "Approved by course instructor";
+      }
+    } else if (rec.status === "REJECTED") {
+      badgeClass = "badge-rejected";
+      if (!isManual && rec.overallScore !== undefined && rec.overallScore < 40 && !rec.facultyRejected) {
+        badgeLabel = "❌ Auto-Rejected";
+        badgeTitle = `Verification score of ${rec.overallScore || 0}% is below the minimum threshold (< 40)`;
+      } else {
+        badgeLabel = "❌ Rejected";
+        badgeTitle = rec.rejectionReason || "Rejected submission";
+      }
+    } else {
+      badgeClass = "badge-review";
+      badgeLabel = "⏳ Under Review";
+      badgeTitle = "Trust score between 40 and 75 awaiting faculty decision";
+    }
 
     let actionsHtml = `<span style="color: var(--text-muted); font-size: 0.8rem;">None required</span>`;
     if (rec.status === "REVIEW" || rec.status === "PENDING") {
@@ -1223,7 +1292,7 @@ function renderRecordsTable(unsubmittedStudents = [], combinedEntries = []) {
         ${rec.matchPercentage ? `<span style="font-size: 0.75rem; color: var(--text-muted); display: block;">Match: ${rec.matchPercentage}%</span>` : ""}
       </td>
       <td>
-        <span class="badge ${badgeClass}">${escapeHtml(rec.status)}</span>
+        <span class="badge ${badgeClass}" title="${escapeHtml(badgeTitle)}">${badgeLabel}</span>
       </td>
       <td>${actionsHtml}</td>
     `;

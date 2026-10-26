@@ -618,11 +618,229 @@ async function recordVerificationFailureCore(db, authContext, data) {
   });
 }
 
+/**
+ * Server-side core implementation of submitAttendanceRecord.
+ * Authoritative backend enforcement of trust-score thresholds and status determination.
+ *
+ * Security & Policy Rules:
+ * 1. Requires valid authentication (caller must be an authenticated student).
+ * 2. Requires an existing active attendance claim issued by validateQrToken for the exact session & course.
+ * 3. Enforces mandatory verification gates that CANNOT be bypassed by high trust score:
+ *    - Liveness check must pass (livenessPassed === true).
+ *    - Face verification must succeed (matchResult !== "NO_MATCH").
+ *    - GPS geofence check must have passed (claim status cannot be REJECTED_GPS).
+ * 4. Overall score must be an integer between 0 and 100.
+ * 5. Applies exact threshold policy:
+ *    - overallScore > 75: APPROVED (autoApproved = true)
+ *    - overallScore < 40: REJECTED (autoApproved = false, below minimum threshold)
+ *    - overallScore 40..75: REVIEW (autoApproved = false, Under Review — Awaiting Faculty Approval)
+ * 6. Atomically writes the final attendance record using Admin SDK to attendance_records/${sessionId}_${studentUid}
+ *    and consumes the attendance claim (marking it SUBMITTED).
+ *
+ * Client-side Computation Architectural Note:
+ * Face feature extraction, anti-spoof liveness detection, and initial score arithmetic are computed
+ * client-side on the student's mobile device to preserve student biometric privacy (raw facial images
+ * and embeddings are never uploaded to third-party clouds without consent).
+ * The server enforces authoritative policy boundaries:
+ * - A submission is strictly rejected unless the student holds an unconsumed, server-issued attendance claim
+ *   generated during the valid 25s window of the faculty's active dynamic QR rotation.
+ * - Server-side idempotency prevents duplicate attendance submissions or re-use of expired claims.
+ * - Score must conform to valid integer range [0, 100], and the status decision (APPROVED / REVIEW / REJECTED)
+ *   is made exclusively by this server-side function via Firebase Admin SDK.
+ * - Direct client-side creation of APPROVED records remains strictly blocked by firestore.rules.
+ *
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {{ uid: string, email: string, displayName?: string } | null} authContext
+ * @param {object} data
+ */
+async function submitAttendanceRecordCore(db, authContext, data) {
+  if (!authContext || !authContext.uid) {
+    throw new ServiceError("unauthenticated", "User must be authenticated.");
+  }
+
+  if (!data || !data.sessionId || !data.courseCode) {
+    throw new ServiceError("invalid-argument", "Missing required fields: sessionId and courseCode.");
+  }
+
+  const { sessionId, courseCode } = data;
+  const studentUid = authContext.uid;
+  const studentEmail = (authContext.email || (data.studentEmail || "")).toLowerCase();
+  const recordId = `${sessionId}_${studentUid}`;
+
+  // Validate score
+  const overallScore = data.overallScore;
+  if (typeof overallScore !== "number" || !Number.isInteger(overallScore) || overallScore < 0 || overallScore > 100) {
+    throw new ServiceError("invalid-argument", "overallScore must be an integer between 0 and 100.");
+  }
+
+  const now = Date.now();
+
+  return await db.runTransaction(async (transaction) => {
+    // 1. Check if final record already exists (idempotency)
+    const recordRef = db.collection("attendance_records").doc(recordId);
+    const existingRecord = await transaction.get(recordRef);
+
+    if (existingRecord.exists) {
+      const recData = existingRecord.data();
+      return {
+        success: true,
+        recordId,
+        sessionId,
+        courseCode,
+        status: recData.status,
+        autoApproved: recData.autoApproved === true,
+        overallScore: recData.overallScore,
+        alreadySubmitted: true
+      };
+    }
+
+    // 2. Read and verify attendance claim
+    const claimRef = db.collection("attendance_claims").doc(recordId);
+    const claimDoc = await transaction.get(claimRef);
+
+    if (!claimDoc.exists) {
+      throw new ServiceError(
+        "failed-precondition",
+        "No valid attendance claim found for this session. A verified dynamic QR scan is required."
+      );
+    }
+
+    const claimData = claimDoc.data();
+
+    // Verify claim student UID
+    if (claimData.studentUid !== studentUid) {
+      throw new ServiceError("permission-denied", "Attendance claim belongs to a different student.");
+    }
+
+    // Verify course matches
+    if (claimData.courseCode && claimData.courseCode !== courseCode) {
+      throw new ServiceError("invalid-argument", "Attendance claim belongs to a different course.");
+    }
+
+    // Verify session matches
+    if (claimData.sessionId !== sessionId) {
+      throw new ServiceError("invalid-argument", "Attendance claim belongs to a different session.");
+    }
+
+    // Check claim status
+    if (claimData.status === "SUBMITTED" || claimData.status === "COMPLETED") {
+      throw new ServiceError("already-exists", "Attendance has already been recorded for this session.");
+    }
+
+    if (claimData.status === "REJECTED_GPS") {
+      throw new ServiceError(
+        "permission-denied",
+        "Attendance rejected due to GPS location outside classroom. Retries or submissions are not permitted."
+      );
+    }
+
+    // 3. Verify course is not archived
+    const coursesSnapshot = await transaction.get(
+      db.collection("courses").where("classCode", "==", courseCode).limit(1)
+    );
+    if (!coursesSnapshot.empty) {
+      const courseDoc = coursesSnapshot.docs[0];
+      if (courseDoc.data().isArchived === true) {
+        throw new ServiceError("failed-precondition", "Cannot submit attendance for an archived course.");
+      }
+    }
+
+    // 4. Mandatory Verification Gates
+    // Mandatory gates cannot be bypassed by high trust score:
+    // - Liveness check must have passed
+    // - Face match cannot be NO_MATCH
+    // - Caller must not report an active failure reason indicating location/liveness violation
+    const livenessPassed = data.livenessPassed === true;
+    const isFaceNoMatch = data.matchResult === "NO_MATCH";
+    const explicitRejection = Boolean(data.rejectionReason);
+
+    let status;
+    let autoApproved = false;
+    let finalRejectionReason = data.rejectionReason || null;
+
+    if (!livenessPassed) {
+      status = "REJECTED";
+      autoApproved = false;
+      finalRejectionReason = "Liveness verification check failed.";
+    } else if (isFaceNoMatch) {
+      status = "REJECTED";
+      autoApproved = false;
+      finalRejectionReason = "Face recognition failed: biometric signature did not match enrolled student reference.";
+    } else if (explicitRejection && !finalRejectionReason.includes("UNCERTAIN_ACCURACY")) {
+      status = "REJECTED";
+      autoApproved = false;
+    } else {
+      // Apply exact trust-score thresholds
+      // Score > 75: APPROVED
+      // Score < 40: REJECTED
+      // Score 40..75: REVIEW
+      if (overallScore > 75) {
+        status = "APPROVED";
+        autoApproved = true;
+        finalRejectionReason = null;
+      } else if (overallScore < 40) {
+        status = "REJECTED";
+        autoApproved = false;
+        finalRejectionReason = `Overall trust score insufficient (${overallScore}/100). Minimum passing threshold is 40.`;
+      } else {
+        status = "REVIEW";
+        autoApproved = false;
+        finalRejectionReason = null;
+      }
+    }
+
+    // 5. Construct and write the final attendance record
+    const finalRecord = {
+      id: recordId,
+      sessionId,
+      studentUid,
+      studentEmail: studentEmail || claimData.studentEmail || "",
+      studentName: data.studentName || authContext.displayName || "Student",
+      courseCode,
+      faceMatchScore: typeof data.faceMatchScore === "number" ? data.faceMatchScore : 0,
+      matchPercentage: typeof data.matchPercentage === "number" ? data.matchPercentage : 0,
+      matchResult: data.matchResult || "UNKNOWN",
+      livenessChallenge: data.livenessChallenge || "BLINK",
+      livenessPassed,
+      status,
+      autoApproved,
+      overallScore,
+      timestamp: now,
+      rejectionReason: finalRejectionReason,
+      selfieBase64: data.selfieBase64 || "",
+      classroomPhotoBase64: data.classroomPhotoBase64 || ""
+    };
+
+    transaction.set(recordRef, finalRecord);
+
+    // 6. Update claim to SUBMITTED
+    transaction.update(claimRef, {
+      status: "SUBMITTED",
+      finalRecordId: recordId,
+      finalStatus: status,
+      submittedAt: now,
+      updatedAt: now
+    });
+
+    return {
+      success: true,
+      recordId,
+      sessionId,
+      courseCode,
+      status,
+      autoApproved,
+      overallScore,
+      alreadySubmitted: false
+    };
+  });
+}
+
 module.exports = {
   ServiceError,
   startAttendanceSessionCore,
   stopAttendanceSessionCore,
   generateQrTokenCore,
   validateQrTokenCore,
-  recordVerificationFailureCore
+  recordVerificationFailureCore,
+  submitAttendanceRecordCore
 };

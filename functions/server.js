@@ -84,7 +84,8 @@ const {
   stopAttendanceSessionCore,
   generateQrTokenCore,
   validateQrTokenCore,
-  recordVerificationFailureCore
+  recordVerificationFailureCore,
+  submitAttendanceRecordCore
 } = require("./qr_service");
 
 const {
@@ -329,6 +330,20 @@ app.post(["/api/recordVerificationFailure", "/recordVerificationFailure"], authe
   try {
     const data = extractPayload(req);
     const result = await recordVerificationFailureCore(db, req.authContext, data);
+    return sendResponse(res, result);
+  } catch (err) {
+    return handleError(res, err);
+  }
+});
+
+/**
+ * POST /api/submitAttendanceRecord
+ * Student submits verified attendance; backend enforces trust-score threshold policy.
+ */
+app.post(["/api/submitAttendanceRecord", "/submitAttendanceRecord"], authenticateToken, async (req, res) => {
+  try {
+    const data = extractPayload(req);
+    const result = await submitAttendanceRecordCore(db, req.authContext, data);
     return sendResponse(res, result);
   } catch (err) {
     return handleError(res, err);

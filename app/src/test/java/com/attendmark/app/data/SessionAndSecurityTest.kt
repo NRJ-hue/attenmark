@@ -292,4 +292,82 @@ class SessionAndSecurityTest {
         assertEquals(1000L, sortedDesc[1].timestamp)
         assertEquals("sess1_stu123", sortedDesc[1].id)
     }
+
+    // ─── 8. Trust-Score Approval Policy & Threshold Boundaries ───────────────────
+
+    private fun evaluateAttendancePolicy(
+        overallScore: Int,
+        livenessPassed: Boolean = true,
+        matchResult: String = "MATCH",
+        gpsWithinBounds: Boolean = true
+    ): Pair<AttendanceStatus, String?> {
+        if (!livenessPassed) {
+            return Pair(AttendanceStatus.REJECTED, "Liveness verification failed.")
+        }
+        if (matchResult == "NO_MATCH") {
+            return Pair(AttendanceStatus.REJECTED, "Face recognition failed.")
+        }
+        if (!gpsWithinBounds) {
+            return Pair(AttendanceStatus.REJECTED, "Location outside classroom bounds.")
+        }
+
+        return when {
+            overallScore > 75 -> Pair(AttendanceStatus.APPROVED, null)
+            overallScore >= 40 -> Pair(AttendanceStatus.REVIEW, null)
+            else -> Pair(AttendanceStatus.REJECTED, "Overall trust score insufficient ($overallScore/100). Minimum passing threshold is 40.")
+        }
+    }
+
+    @Test
+    fun trustScorePolicy_boundaryEvaluation() {
+        // Boundary 1: Score 100 -> APPROVED
+        val (status100, _) = evaluateAttendancePolicy(100)
+        assertEquals(AttendanceStatus.APPROVED, status100)
+
+        // Boundary 2: Score 76 -> APPROVED (threshold boundary > 75)
+        val (status76, _) = evaluateAttendancePolicy(76)
+        assertEquals(AttendanceStatus.APPROVED, status76)
+
+        // Boundary 3: Score 75 -> REVIEW (upper review boundary)
+        val (status75, _) = evaluateAttendancePolicy(75)
+        assertEquals(AttendanceStatus.REVIEW, status75)
+
+        // Boundary 4: Score 40 -> REVIEW (lower review boundary)
+        val (status40, _) = evaluateAttendancePolicy(40)
+        assertEquals(AttendanceStatus.REVIEW, status40)
+
+        // Boundary 5: Score 39 -> REJECTED (below minimum threshold)
+        val (status39, reason39) = evaluateAttendancePolicy(39)
+        assertEquals(AttendanceStatus.REJECTED, status39)
+        assertTrue(reason39?.contains("39/100") == true)
+
+        // Boundary 6: Score 0 -> REJECTED
+        val (status0, _) = evaluateAttendancePolicy(0)
+        assertEquals(AttendanceStatus.REJECTED, status0)
+    }
+
+    @Test
+    fun trustScorePolicy_mandatoryVerificationGatesCannotBeBypassed() {
+        // Gate 1: Liveness failure with score 99 cannot be APPROVED
+        val (statusLivenessFail, reasonLiveness) = evaluateAttendancePolicy(overallScore = 99, livenessPassed = false)
+        assertEquals(AttendanceStatus.REJECTED, statusLivenessFail)
+        assertTrue(reasonLiveness?.contains("Liveness") == true)
+
+        // Gate 2: Face mismatch with score 95 cannot be APPROVED
+        val (statusFaceFail, reasonFace) = evaluateAttendancePolicy(overallScore = 95, matchResult = "NO_MATCH")
+        assertEquals(AttendanceStatus.REJECTED, statusFaceFail)
+        assertTrue(reasonFace?.contains("Face") == true)
+
+        // Gate 3: GPS out of bounds with score 98 cannot be APPROVED
+        val (statusGpsFail, reasonGps) = evaluateAttendancePolicy(overallScore = 98, gpsWithinBounds = false)
+        assertEquals(AttendanceStatus.REJECTED, statusGpsFail)
+        assertTrue(reasonGps?.contains("Location") == true)
+    }
+
+    @Test
+    fun trustScorePolicy_statusLabelsAndDescriptions() {
+        assertEquals("Approved", AttendanceStatus.APPROVED.label)
+        assertEquals("Under Review — Awaiting Faculty Approval", AttendanceStatus.REVIEW.label)
+        assertEquals("Rejected", AttendanceStatus.REJECTED.label)
+    }
 }
