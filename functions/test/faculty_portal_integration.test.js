@@ -199,9 +199,9 @@ describe("Phase 4: Faculty Web Portal Integration Tests", function () {
       // Token 1
       const token1 = await generateQrTokenCore(db, facultyAuth, { courseCode: COURSE_CODE });
       assert.ok(token1.tokenId);
-      assert.strictEqual(token1.validityMs, 30000);
+      assert.strictEqual(token1.validityMs, 15000);
 
-      // Token 2 (Rotation after 25s)
+      // Token 2 (Rotation after 15s)
       const token2 = await generateQrTokenCore(db, facultyAuth, { courseCode: COURSE_CODE });
       assert.ok(token2.tokenId);
       assert.notStrictEqual(token1.tokenId, token2.tokenId);

@@ -13,6 +13,7 @@ import {
   onAuthStateChanged,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   collection,
@@ -23,6 +24,10 @@ import {
   httpsCallable,
   isLocal
 } from "./firebase-config.js";
+import {
+  generateAttendanceWorkbook,
+  detectPendingReviews
+} from "./attendance-exporter.js";
 
 // ─── Application State ────────────────────────────────────────────────────────
 let currentFacultyUser = null;
@@ -140,6 +145,22 @@ const modalRejectReason = document.getElementById("modal-reject-reason");
 const formRejectReason = document.getElementById("form-reject-reason");
 const rejectRecordId = document.getElementById("reject-record-id");
 const rejectReasonText = document.getElementById("reject-reason-text");
+
+// Export to Excel Elements
+const btnOpenExportModal = document.getElementById("btn-open-export-modal");
+const modalExportExcel = document.getElementById("modal-export-excel");
+const exportCourseName = document.getElementById("export-course-name");
+const exportCourseDetails = document.getElementById("export-course-details");
+const exportPendingWarning = document.getElementById("export-pending-warning");
+const exportPendingText = document.getElementById("export-pending-text");
+const exportScopeAll = document.getElementById("export-scope-all");
+const exportScopeRange = document.getElementById("export-scope-range");
+const exportDateRangeInputs = document.getElementById("export-date-range-inputs");
+const exportDateFrom = document.getElementById("export-date-from");
+const exportDateTo = document.getElementById("export-date-to");
+const btnResolveReviewsFirst = document.getElementById("btn-resolve-reviews-first");
+const btnExportProvisional = document.getElementById("btn-export-provisional");
+const btnConfirmExport = document.getElementById("btn-confirm-export");
 
 // ─── View Routing ─────────────────────────────────────────────────────────────
 function switchView(viewName) {
@@ -532,6 +553,9 @@ function renderCoursesGrid() {
             ↺ Restore / Unarchive Course
           </button>
         `}
+        <button class="btn btn-outline btn-sm btn-export-course" title="Export Course Attendance to Excel" style="width: 100%; color: #34d399; border-color: rgba(52,211,153,0.4); background: rgba(52,211,153,0.06); font-weight: 600;">
+          📊 Export Attendance (.xlsx)
+        </button>
       </div>
     `;
 
@@ -539,6 +563,13 @@ function renderCoursesGrid() {
     if (btnManage) {
       btnManage.addEventListener("click", () => {
         openCourseSession(course);
+      });
+    }
+
+    const btnExport = card.querySelector(".btn-export-course");
+    if (btnExport) {
+      btnExport.addEventListener("click", () => {
+        openExportModal(course);
       });
     }
 
@@ -995,9 +1026,9 @@ function launchActiveSessionUI() {
   // Trigger immediate QR token generation
   refreshQrToken();
 
-  // Start 30-second rotation cadence
+  // Start 15-second rotation cadence
   clearInterval(qrRotationTimer);
-  qrRotationTimer = setInterval(refreshQrToken, 30000);
+  qrRotationTimer = setInterval(refreshQrToken, 15000);
 
   // Start smooth progress and countdown timer
   startCountdownTimers();
@@ -1016,8 +1047,9 @@ async function refreshQrToken() {
     });
 
     const tokenId = res.data.tokenId;
+    const validityMs = res.data.validityMs || 15000;
     renderQrCode(tokenId);
-    resetRotationCountdown();
+    resetRotationCountdown(validityMs);
   } catch (err) {
     console.error("Error refreshing QR token:", err);
     if (err.message && err.message.includes("Session is inactive")) {
@@ -1038,8 +1070,9 @@ function renderQrCode(rawOpaqueToken) {
   });
 }
 
-function resetRotationCountdown() {
-  let secondsLeft = 30;
+function resetRotationCountdown(validityMs = 15000) {
+  let secondsLeft = Math.round(validityMs / 1000);
+  const totalSeconds = secondsLeft || 15;
   qrRotationCountdown.textContent = `${secondsLeft}s`;
   rotationProgressBar.style.width = "100%";
 
@@ -1048,7 +1081,7 @@ function resetRotationCountdown() {
     secondsLeft -= 1;
     if (secondsLeft < 0) secondsLeft = 0;
     qrRotationCountdown.textContent = `${secondsLeft}s`;
-    const pct = (secondsLeft / 30) * 100;
+    const pct = (secondsLeft / totalSeconds) * 100;
     rotationProgressBar.style.width = `${pct}%`;
 
     if (secondsLeft <= 0) {
@@ -1394,4 +1427,214 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+// ─── 4. Excel Attendance Export ───────────────────────────────────────────────
+let currentExportCourse = null;
+let currentExportSessions = [];
+let currentExportRecords = [];
+let currentExportManual = [];
+
+async function openExportModal(course) {
+  if (!course) return;
+  currentExportCourse = course;
+
+  if (exportCourseName) {
+    exportCourseName.textContent = `${course.name} (${course.classCode})`;
+  }
+  if (exportCourseDetails) {
+    exportCourseDetails.textContent = `Class Code: ${course.classCode} | Enrolled: ${(course.enrolledStudents || []).length} students | Loading session history...`;
+  }
+
+  // Reset inputs
+  if (exportScopeAll) exportScopeAll.checked = true;
+  if (exportScopeRange) exportScopeRange.checked = false;
+  if (exportDateRangeInputs) exportDateRangeInputs.style.display = "none";
+  if (exportDateFrom) exportDateFrom.value = "";
+  if (exportDateTo) exportDateTo.value = "";
+
+  // Reset alerts / buttons
+  if (exportPendingWarning) exportPendingWarning.style.display = "none";
+  if (btnResolveReviewsFirst) btnResolveReviewsFirst.style.display = "none";
+  if (btnExportProvisional) btnExportProvisional.style.display = "none";
+  if (btnConfirmExport) {
+    btnConfirmExport.style.display = "inline-flex";
+    btnConfirmExport.disabled = true;
+    btnConfirmExport.textContent = "Loading Data...";
+  }
+
+  if (modalExportExcel) modalExportExcel.classList.add("open");
+
+  try {
+    // 1. Fetch historical attendance_sessions for this course
+    const sessionsQuery = query(
+      collection(db, "attendance_sessions"),
+      where("courseCode", "==", course.classCode)
+    );
+    const sessionsSnap = await getDocs(sessionsQuery);
+    const sessionsList = [];
+    sessionsSnap.forEach((docSnap) => {
+      sessionsList.push({ id: docSnap.id, sessionId: docSnap.id, ...docSnap.data() });
+    });
+
+    // Check active session pointer in sessions/{course.classCode}
+    try {
+      const activePointerSnap = await getDoc(doc(db, "sessions", course.classCode));
+      if (activePointerSnap.exists()) {
+        const activeData = activePointerSnap.data();
+        if (activeData.sessionId && !sessionsList.some((s) => s.sessionId === activeData.sessionId)) {
+          sessionsList.push({ id: activeData.sessionId, sessionId: activeData.sessionId, ...activeData });
+        }
+      }
+    } catch (e) {
+      console.warn("Could not check active session pointer:", e);
+    }
+
+    // 2. Fetch all attendance_records for this course
+    const recordsQuery = query(
+      collection(db, "attendance_records"),
+      where("courseCode", "==", course.classCode)
+    );
+    const recordsSnap = await getDocs(recordsQuery);
+    const recordsList = [];
+    recordsSnap.forEach((docSnap) => {
+      recordsList.push({ id: docSnap.id, ...docSnap.data() });
+    });
+
+    // 3. Fetch all manual_attendance_requests for this course
+    const manualQuery = query(
+      collection(db, "manual_attendance_requests"),
+      where("courseCode", "==", course.classCode)
+    );
+    const manualSnap = await getDocs(manualQuery);
+    const manualList = [];
+    manualSnap.forEach((docSnap) => {
+      manualList.push({ id: docSnap.id, ...docSnap.data() });
+    });
+
+    currentExportSessions = sessionsList;
+    currentExportRecords = recordsList;
+    currentExportManual = manualList;
+
+    if (exportCourseDetails) {
+      exportCourseDetails.textContent = `Class Code: ${course.classCode} | Sessions: ${sessionsList.length} | Enrolled: ${(course.enrolledStudents || []).length} students`;
+    }
+
+    // Check for pending / unconfirmed reviews
+    const pendingInfo = detectPendingReviews(recordsList, manualList);
+    if (pendingInfo.count > 0) {
+      if (exportPendingWarning) exportPendingWarning.style.display = "block";
+      if (exportPendingText) {
+        exportPendingText.textContent =
+          `There are ${pendingInfo.count} pending attendance submission(s) or manual request(s) awaiting faculty review. ` +
+          `To generate a certified final gradebook, please resolve them first. ` +
+          `Alternatively, you can export a Provisional Attendance Sheet with pending reviews clearly noted.`;
+      }
+      if (btnResolveReviewsFirst) btnResolveReviewsFirst.style.display = "inline-flex";
+      if (btnExportProvisional) btnExportProvisional.style.display = "inline-flex";
+      if (btnConfirmExport) btnConfirmExport.style.display = "none";
+    } else {
+      if (exportPendingWarning) exportPendingWarning.style.display = "none";
+      if (btnResolveReviewsFirst) btnResolveReviewsFirst.style.display = "none";
+      if (btnExportProvisional) btnExportProvisional.style.display = "none";
+      if (btnConfirmExport) {
+        btnConfirmExport.style.display = "inline-flex";
+        btnConfirmExport.disabled = false;
+        btnConfirmExport.textContent = "⬇️ Download Excel (.xlsx)";
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load export data:", err);
+    if (exportCourseDetails) {
+      exportCourseDetails.textContent = `Error loading session history: ${err.message}`;
+    }
+    if (btnConfirmExport) {
+      btnConfirmExport.disabled = true;
+      btnConfirmExport.textContent = "Error Loading";
+    }
+  }
+}
+
+function executeExport(isProvisional = false) {
+  if (!currentExportCourse) {
+    alert("No course selected for export.");
+    return;
+  }
+  if (!window.XLSX) {
+    alert("SheetJS library is not available. Please refresh the page and try again.");
+    return;
+  }
+
+  try {
+    let dateFrom = null;
+    let dateTo = null;
+    if (exportScopeRange && exportScopeRange.checked) {
+      dateFrom = exportDateFrom ? exportDateFrom.value || null : null;
+      dateTo = exportDateTo ? exportDateTo.value || null : null;
+    }
+
+    const result = generateAttendanceWorkbook(
+      currentExportCourse,
+      currentExportSessions,
+      currentExportRecords,
+      currentExportManual,
+      { dateFrom, dateTo, isProvisional },
+      window.XLSX
+    );
+
+    window.XLSX.writeFile(result.wb, result.filename);
+    if (modalExportExcel) modalExportExcel.classList.remove("open");
+  } catch (err) {
+    console.error("Failed to generate Excel export:", err);
+    alert("Could not generate Excel export: " + err.message);
+  }
+}
+
+if (btnOpenExportModal) {
+  btnOpenExportModal.addEventListener("click", () => {
+    if (currentCourse) {
+      openExportModal(currentCourse);
+    }
+  });
+}
+
+if (btnConfirmExport) {
+  btnConfirmExport.addEventListener("click", () => {
+    executeExport(false);
+  });
+}
+
+if (btnExportProvisional) {
+  btnExportProvisional.addEventListener("click", () => {
+    executeExport(true);
+  });
+}
+
+if (btnResolveReviewsFirst) {
+  btnResolveReviewsFirst.addEventListener("click", () => {
+    if (modalExportExcel) modalExportExcel.classList.remove("open");
+    // If in session view, switch to review tab
+    if (sessionView && sessionView.classList.contains("active")) {
+      const reviewTab = document.querySelector('.tab-btn[data-tab="review"]');
+      if (reviewTab) reviewTab.click();
+    } else {
+      // If in dashboard view, switch to pending manual requests tab
+      if (tabDashManualPending) tabDashManualPending.click();
+      const dashManualPanel = document.getElementById("dashboard-manual-panel");
+      if (dashManualPanel) dashManualPanel.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+}
+
+if (exportScopeAll && exportScopeRange) {
+  exportScopeAll.addEventListener("change", () => {
+    if (exportScopeAll.checked && exportDateRangeInputs) {
+      exportDateRangeInputs.style.display = "none";
+    }
+  });
+  exportScopeRange.addEventListener("change", () => {
+    if (exportScopeRange.checked && exportDateRangeInputs) {
+      exportDateRangeInputs.style.display = "flex";
+    }
+  });
 }

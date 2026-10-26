@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="css/portal.css">
   <!-- Bundled offline QR Code generator -->
   <script src="js/qrcode.min.js"></script>
+  <!-- Bundled offline Excel (.xlsx) workbook generator (SheetJS) -->
+  <script src="js/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -207,6 +209,11 @@
           </div>
           <p id="session-course-subtitle" style="margin-top: 0.4rem;">Class Code: CS101 | Enrolled: 0 students</p>
         </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <button id="btn-open-export-modal" class="btn btn-outline btn-sm" style="display: inline-flex; align-items: center; gap: 0.4rem; border-color: rgba(16, 185, 129, 0.4); color: #34d399; font-weight: 600;">
+            📊 Export Attendance to Excel
+          </button>
+        </div>
       </div>
 
       <!-- Pre-Session Configuration Card (Shown when session is inactive) -->
@@ -273,7 +280,7 @@
           <!-- QR Countdown and Rotation Bar -->
           <div class="timer-box">
             <div class="timer-label">Next QR Rotation In</div>
-            <div id="qr-rotation-countdown" class="timer-value">25s</div>
+            <div id="qr-rotation-countdown" class="timer-value">15s</div>
             <div class="rotation-bar-container">
               <div id="rotation-progress-bar" class="rotation-bar"></div>
             </div>
@@ -286,7 +293,7 @@
           </div>
 
           <p class="qr-footer-note">
-            Students scan this code inside the AttendIQ Android App. Rotates every 25 seconds for anti-proxy security.
+            Students scan this code inside the AttendIQ Android App. Rotates every 15 seconds for anti-proxy security.
           </p>
 
           <button id="btn-stop-session" class="btn btn-danger" style="width: 100%;">
@@ -410,6 +417,81 @@
           <button type="submit" class="btn btn-danger">Confirm Rejection</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Export Attendance to Excel -->
+  <div id="modal-export-excel" class="modal-overlay">
+    <div class="modal-content" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 style="display: flex; align-items: center; gap: 0.5rem;">
+          <span>📊</span>
+          <span>Export Attendance to Excel</span>
+        </h3>
+        <button class="close-btn" data-close="modal-export-excel">&times;</button>
+      </div>
+
+      <div style="margin-top: 0.5rem; margin-bottom: 1.25rem;">
+        <div style="font-size: 1.05rem; font-weight: 700; color: #f8fafc;" id="export-course-name">CS101 — Computer Science</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted);" id="export-course-details">Class Code: CS101 | Total Sessions: 0</div>
+      </div>
+
+      <!-- Pending Reviews Warning Banner -->
+      <div id="export-pending-warning" class="alert-banner error" style="display: none; margin-bottom: 1.25rem; font-size: 0.85rem; line-height: 1.4;">
+        <strong>⚠️ Unresolved Reviews Detected:</strong>
+        <p style="margin: 0.35rem 0 0 0;" id="export-pending-text">
+          There are pending attendance submissions awaiting faculty confirmation. To generate a certified final gradebook, please resolve them first. Alternatively, you may export a Provisional Attendance Sheet with pending reviews clearly noted.
+        </p>
+      </div>
+
+      <!-- Date Range Filter Options -->
+      <div class="form-group" style="margin-bottom: 1rem;">
+        <label>Session Scope</label>
+        <div style="display: flex; gap: 1rem; margin-top: 0.4rem; font-size: 0.85rem;">
+          <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+            <input type="radio" name="export-scope" value="all" id="export-scope-all" checked>
+            <span>All Sessions</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer;">
+            <input type="radio" name="export-scope" value="range" id="export-scope-range">
+            <span>Date Range</span>
+          </label>
+        </div>
+      </div>
+
+      <div id="export-date-range-inputs" style="display: none; gap: 0.5rem; margin-bottom: 1rem;">
+        <div style="flex: 1;">
+          <label for="export-date-from" style="font-size: 0.8rem; color: var(--text-muted);">From</label>
+          <input type="date" id="export-date-from" class="form-input" style="padding: 0.45rem;">
+        </div>
+        <div style="flex: 1;">
+          <label for="export-date-to" style="font-size: 0.8rem; color: var(--text-muted);">To</label>
+          <input type="date" id="export-date-to" class="form-input" style="padding: 0.45rem;">
+        </div>
+      </div>
+
+      <div style="background: rgba(255,255,255,0.04); border: 1px solid var(--border-color); border-radius: 8px; padding: 0.75rem 0.9rem; font-size: 0.8rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 1.25rem;">
+        <strong>Spreadsheet Specifications:</strong>
+        <ul style="margin: 0.4rem 0 0 1.2rem; padding: 0;">
+          <li>Real binary <code>.xlsx</code> workbook with frozen Roll No & header panes</li>
+          <li>Roll No extracted from email (e.g. <code>25bcs254</code>)</li>
+          <li>Approved = <code>1</code>, Rejected = <code>0</code>, Absent = <code>0</code></li>
+          <li>Enrollment Notice: Reflects current course enrollments; pre-enrollment history is conserved.</li>
+        </ul>
+      </div>
+
+      <div id="export-modal-actions" style="display: flex; justify-content: flex-end; gap: 0.75rem; flex-wrap: wrap;">
+        <button type="button" class="btn btn-outline btn-sm" data-close="modal-export-excel">Cancel</button>
+        <button type="button" id="btn-resolve-reviews-first" class="btn btn-outline btn-sm" style="display: none; color: #fbbf24; border-color: rgba(245,158,11,0.4);">
+          Resolve Reviews First
+        </button>
+        <button type="button" id="btn-export-provisional" class="btn btn-outline btn-sm" style="display: none; color: #f87171; border-color: rgba(248,113,113,0.4);">
+          Export Provisional (.xlsx)
+        </button>
+        <button type="button" id="btn-confirm-export" class="btn btn-primary btn-sm" style="background: #10b981; border-color: #10b981;">
+          ⬇️ Download Excel (.xlsx)
+        </button>
+      </div>
     </div>
   </div>
 

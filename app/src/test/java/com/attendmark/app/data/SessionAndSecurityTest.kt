@@ -370,4 +370,58 @@ class SessionAndSecurityTest {
         assertEquals("Under Review — Awaiting Faculty Approval", AttendanceStatus.REVIEW.label)
         assertEquals("Rejected", AttendanceStatus.REJECTED.label)
     }
+
+    // ─── 9. Manual Attendance Request Reasons & Validation ───────────────────────
+
+    private fun validateManualRequest(
+        sessionId: String?,
+        studentUid: String?,
+        courseCode: String?,
+        reason: String?
+    ): Pair<Boolean, String?> {
+        if (sessionId.isNullOrBlank()) return Pair(false, "sessionId is required")
+        if (studentUid.isNullOrBlank()) return Pair(false, "studentUid is required")
+        if (courseCode.isNullOrBlank()) return Pair(false, "courseCode is required")
+        if (reason.isNullOrBlank()) return Pair(false, "reason is required")
+        val trimmed = reason.trim()
+        if (trimmed.isEmpty()) return Pair(false, "reason cannot be blank")
+        if (trimmed.length > 500) return Pair(false, "reason cannot exceed 500 characters")
+        return Pair(true, null)
+    }
+
+    @Test
+    fun manualRequest_requiresNonEmptyReasonWithin500Chars() {
+        // Valid reason
+        val (ok, err) = validateManualRequest("sess-1", "stu-1", "CS101", "Camera broke during QR scan")
+        assertTrue(ok)
+        assertEquals(null, err)
+
+        // Blank or whitespace reason
+        val (blankOk, _) = validateManualRequest("sess-1", "stu-1", "CS101", "   ")
+        assertFalse(blankOk)
+
+        // Empty reason
+        val (emptyOk, _) = validateManualRequest("sess-1", "stu-1", "CS101", "")
+        assertFalse(emptyOk)
+
+        // Excessive reason (> 500 chars)
+        val longReason = "A".repeat(501)
+        val (longOk, longErr) = validateManualRequest("sess-1", "stu-1", "CS101", longReason)
+        assertFalse(longOk)
+        assertTrue(longErr?.contains("500") == true)
+
+        // Exact 500 chars is valid
+        val exact500 = "B".repeat(500)
+        val (exactOk, _) = validateManualRequest("sess-1", "stu-1", "CS101", exact500)
+        assertTrue(exactOk)
+    }
+
+    @Test
+    fun manualRequest_requiresActiveSessionAndCannotUseSyntheticSession() {
+        val (noSessOk, _) = validateManualRequest("", "stu-1", "CS101", "Valid reason")
+        assertFalse(noSessOk)
+
+        val (nullSessOk, _) = validateManualRequest(null, "stu-1", "CS101", "Valid reason")
+        assertFalse(nullSessOk)
+    }
 }

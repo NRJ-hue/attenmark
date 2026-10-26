@@ -399,6 +399,17 @@ class FirestoreRepository {
             return
         }
 
+        val reason = record.rejectionReason ?: ""
+        if (reason.isBlank()) {
+            onFailure(IllegalArgumentException("Cannot submit manual request: a non-empty reason is strictly required."))
+            return
+        }
+
+        if (reason.length > 600) {
+            onFailure(IllegalArgumentException("Cannot submit manual request: reason exceeds maximum length."))
+            return
+        }
+
         val docId = "${record.sessionId}_${record.studentUid}"
 
         val requestMap = hashMapOf(

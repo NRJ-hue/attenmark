@@ -13,10 +13,10 @@ const isDemoMode = Boolean(
 
 module.exports = {
   // Server-enforced lifetime of each individual QR token
-  TOKEN_VALIDITY_MS: 30000, // 30 seconds
+  TOKEN_VALIDITY_MS: 15000, // 15 seconds
 
-  // Web portal QR rotation cadence (aligned with 30s validity window)
-  QR_REFRESH_INTERVAL_MS: 30000, // 30 seconds
+  // Web portal QR rotation cadence (aligned with 15s validity window)
+  QR_REFRESH_INTERVAL_MS: 15000, // 15 seconds
 
   // Max verification attempts permitted per student per session (1 initial + 1 single retry)
   MAX_ATTEMPTS: 2,

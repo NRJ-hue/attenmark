@@ -356,8 +356,8 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       assert.ok(response.tokenId, "Token ID must be present");
       assert.strictEqual(typeof response.tokenId, "string");
       assert.strictEqual(response.tokenId.length, 64, "Token should be 32 hex bytes (64 chars)");
-      assert.strictEqual(response.validityMs, 30000);
-      assert.strictEqual(response.refreshIntervalMs, 30000);
+      assert.strictEqual(response.validityMs, 15000);
+      assert.strictEqual(response.refreshIntervalMs, 15000);
       assert.ok(response.expiresAt > Date.now(), "Token expiry must be in the future");
 
       // Verify token is stored in Firestore
@@ -450,17 +450,17 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
       );
     });
 
-    it("validates token at refresh boundary (26s after issue) within the 30s validity window", async function () {
+    it("validates token at refresh boundary (14s after issue) within the 15s validity window", async function () {
       const boundaryTokenId = "boundary-token-" + Date.now();
       const now = Date.now();
-      // Issued 26 seconds ago, expiring in 4 seconds (total 30s validity)
+      // Issued 14 seconds ago, expiring in 1 second (total 15s validity)
       await db.collection("qr_tokens").doc(boundaryTokenId).set({
         tokenId: boundaryTokenId,
         sessionId: activeSessionId,
         courseCode: COURSE_CODE,
         facultyUid: FACULTY_UID,
-        issuedAt: now - 26000,
-        expiresAt: now + 4000
+        issuedAt: now - 14000,
+        expiresAt: now + 1000
       });
       await db.collection("sessions").doc(COURSE_CODE).update({ currentTokenId: boundaryTokenId });
 
@@ -471,6 +471,31 @@ describe("Backend Cloud Functions & Session Lifecycle", function () {
         sessionId: activeSessionId
       });
       assert.strictEqual(res.valid, true);
+    });
+
+    it("rejects token past the 15s expiration boundary (15.1s after issue)", async function () {
+      const expiredTokenId = "expired-token-" + Date.now();
+      const now = Date.now();
+      // Issued 15.1 seconds ago, expired 100ms ago
+      await db.collection("qr_tokens").doc(expiredTokenId).set({
+        tokenId: expiredTokenId,
+        sessionId: activeSessionId,
+        courseCode: COURSE_CODE,
+        facultyUid: FACULTY_UID,
+        issuedAt: now - 15100,
+        expiresAt: now - 100
+      });
+      await db.collection("sessions").doc(COURSE_CODE).update({ currentTokenId: expiredTokenId });
+
+      const studentAuth = { uid: STUDENT_1_UID, email: STUDENT_1_EMAIL };
+      await assert.rejects(
+        validateQrTokenCore(db, studentAuth, {
+          tokenId: expiredTokenId,
+          courseCode: COURSE_CODE,
+          sessionId: activeSessionId
+        }),
+        (err) => err.code === "deadline-exceeded" && err.message.includes("expired")
+      );
     });
 
     it("rejects previous QR token immediately once replacement QR is generated", async function () {

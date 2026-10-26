@@ -113,11 +113,20 @@ fun StudentDashboardScreen(
                         OutlinedTextField(
                             value = reasonText,
                             onValueChange = {
-                                reasonText = it
-                                manualRequestError = null
+                                if (it.length <= 500) {
+                                    reasonText = it
+                                    manualRequestError = null
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = { Text("Reason for manual attendance request...") },
+                            supportingText = {
+                                Text(
+                                    "${reasonText.length}/500",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (reasonText.length > 500) StatusRejected else TextSecondary
+                                )
+                            },
                             enabled = !isSubmitting,
                             singleLine = false,
                             maxLines = 3
@@ -137,6 +146,10 @@ fun StudentDashboardScreen(
                             val trimmedReason = reasonText.trim()
                             if (trimmedReason.isBlank()) {
                                 manualRequestError = "Please enter a reason for your request."
+                                return@Button
+                            }
+                            if (trimmedReason.length > 500) {
+                                manualRequestError = "Reason cannot exceed 500 characters."
                                 return@Button
                             }
                             isSubmitting = true
